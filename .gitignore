@@ -1,6 +1,8 @@
 Release/
 Debug/
 build/
+build-solvers/
+buid-master/
 html/
 Release+Asserts/
 Debug+Asserts/
