@@ -19,3 +19,4 @@ doxygen/
 *.opt
 *.log
 *.status
+/PTABen
