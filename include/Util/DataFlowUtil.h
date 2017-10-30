@@ -218,7 +218,7 @@ public:
     static char ID;
 
     IteratedDominanceFrontier() :
-    llvm::DominanceFrontierBase<llvm::BasicBlock,false>, DF(NULL) {
+    llvm::DominanceFrontierBase<llvm::BasicBlock,false>(), DF(NULL) {
     }
 
     virtual ~IteratedDominanceFrontier() {
