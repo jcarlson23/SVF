@@ -5,7 +5,7 @@ echo "Setting up environment for PTA"
 # Please change LLVM_OBJ_ROOT before using it
 ########
 
-export LLVM_OBJ_ROOT=/home/ysui/llvm-4.0.0/llvm-4.0.0.obj
+export LLVM_OBJ_ROOT=/Users/jaredcarlson/Projects/llvm-5-build
 
 export PATH=$LLVM_OBJ_ROOT/bin:$PATH
 export LLVM_DIR=$LLVM_OBJ_ROOT
@@ -17,7 +17,7 @@ export LLVMDIS=llvm-dis
 export LLVMLLC=llc
 
 ##############astyle code formatting###############
-AstyleDir=/home/ysui/astyle/build/clang
+AstyleDir=/Users/jaredcarlson/Tools/astyle
 export PATH=$AstyleDir/bin:$PATH
 
 ##############check what os we have

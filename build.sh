@@ -5,8 +5,8 @@
 #########
 # Please change the following home directories of your LLVM builds
 ########
-LLVMRELEASE=/home/ysui/llvm-4.0.0/llvm-4.0.0.obj
-LLVMDEBUG=/home/ysui/llvm-4.0.0/llvm-4.0.0.dbg
+LLVMRELEASE=/Users/jaredcarlson/Projects/llvm-5-build
+LLVMDEBUG=/Users/jaredcarlson/Projects/llvm-5-debug-build
 
 if [[ $1 == 'debug' ]]
 then
