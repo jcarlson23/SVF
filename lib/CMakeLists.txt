@@ -16,6 +16,7 @@ set(SOURCES
     Util/PathCondAllocator.cpp
     Util/PTAStat.cpp
     Util/ThreadAPI.cpp
+    Util/SVFModule.cpp
     MemoryModel/ConsG.cpp
     MemoryModel/LocationSet.cpp
     MemoryModel/LocMemModel.cpp
@@ -44,8 +45,10 @@ set(SOURCES
     WPA/AndersenStat.cpp
     WPA/AndersenWave.cpp
     WPA/AndersenWaveDiff.cpp
+    WPA/AndersenWaveDiffWithType.cpp
     WPA/FlowSensitive.cpp
     WPA/FlowSensitiveStat.cpp
+    WPA/TypeAnalysis.cpp
     WPA/WPAPass.cpp)
 
 add_llvm_loadable_module(Svf ${SOURCES})

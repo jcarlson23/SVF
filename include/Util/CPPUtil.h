@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -34,7 +34,9 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/CallSite.h>
 #include <llvm/IR/Constants.h>
+#include "Util/BasicTypes.h"
 
+class CHGraph;
 /*
  * Util class to assist pointer analysis for cpp programs
  */
@@ -55,13 +57,47 @@ bool isVirtualCallSite(llvm::CallSite cs);
 bool isConstructor(const llvm::Function *F);
 bool isDestructor(const llvm::Function *F);
 
+/*
+ * VtableA = {&A::foo}
+ * A::A(this){
+ *   *this = &VtableA;
+ * }
+ *
+ *
+ * A* p = new A;
+ * cs: p->foo(...)
+ * ==>
+ *  vtptr = *p;
+ *  vfn = &vtptr[i]
+ *  %funp = *vfn
+ *  call %funp(p,...)
+ * getConstructorThisPtr(A) return "this" pointer
+ * getVCallThisPtr(cs) return p (this pointer)
+ * getVCallVtblPtr(cs) return vtptr
+ * getVCallIdx(cs) return i
+ * getClassNameFromVtblObj(VtableA) return
+ * getClassNameFromType(type of p) return type A
+ */
+const llvm::Argument* getConstructorThisPtr(const llvm::Function* fun);
 const llvm::Value *getVCallThisPtr(llvm::CallSite cs);
 const llvm::Value *getVCallVtblPtr(llvm::CallSite cs);
-std::size_t getVCallIdx(llvm::CallSite cs);
-
+u64_t getVCallIdx(llvm::CallSite cs);
+std::string getClassNameFromVtblObj(const llvm::Value *value);
 std::string getClassNameFromType(const llvm::Type *ty);
-std::string getClassNameFromVtblVal(const llvm::Value *value);
+std::string getClassNameOfThisPtr(llvm::CallSite cs);
+std::string getFunNameOfVCallSite(llvm::CallSite cs);
+bool VCallInCtorOrDtor(llvm::CallSite cs);
 
+/*
+ *  A(A* this){
+ *      store this this.addr;
+ *      tmp = load this.addr;
+ *      this1 = bitcast(tmp);
+ *      B(this1);
+ *  }
+ *  this and this1 are the same thisPtr in the constructor
+ */
+bool isSameThisPtrInConstructor(const llvm::Argument* thisPtr1, const llvm::Value* thisPtr2);
 }
 
 #endif /* CPPUtil_H_ */

@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -236,13 +236,13 @@ void MemSSA::insertPHI(const Function& fun) {
         while (!bbs.empty()) {
             const BasicBlock* bb = bbs.back();
             bbs.pop_back();
-            DominanceFrontierBase<BasicBlock>::const_iterator it = df->find(const_cast<BasicBlock*>(bb));
+            DominanceFrontierBase<BasicBlock, false>::const_iterator it = df->find(const_cast<BasicBlock*>(bb));
             if(it == df->end()) {
                 wrnMsg("bb not in the dominance frontier map??");
                 continue;
             }
-            const DominanceFrontierBase<BasicBlock>::DomSetType& domSet = it->second;
-            for (DominanceFrontierBase<BasicBlock>::DomSetType::const_iterator bit =
+            const DominanceFrontierBase<BasicBlock, false>::DomSetType& domSet = it->second;
+            for (DominanceFrontierBase<BasicBlock, false>::DomSetType::const_iterator bit =
                         domSet.begin(); bit != domSet.end(); ++bit) {
                 const BasicBlock* pbb = *bit;
                 // if we never insert this phi node before
@@ -574,22 +574,22 @@ void MemSSA::dumpMSSA(llvm::raw_ostream& Out) {
         return;
 
 
-    for (Module::iterator fit = pta->getModule()->begin(), efit = pta->getModule()->end();
+    for (SVFModule::iterator fit = pta->getModule().begin(), efit = pta->getModule().end();
             fit != efit; ++fit) {
-        Function& fun = *fit;
-        if(MSSAFun!="" && MSSAFun!=fun.getName())
+        Function* fun = *fit;
+        if(MSSAFun!="" && MSSAFun!=fun->getName())
             continue;
 
-        Out << "==========FUNCTION: " << fun.getName() << "==========\n";
+        Out << "==========FUNCTION: " << fun->getName() << "==========\n";
         // dump function entry chi nodes
-        if (hasFuncEntryChi(&fun)) {
-            CHISet & entry_chis = getFuncEntryChiSet(&fun);
+        if (hasFuncEntryChi(fun)) {
+            CHISet & entry_chis = getFuncEntryChiSet(fun);
             for (CHISet::iterator chi_it = entry_chis.begin(); chi_it != entry_chis.end(); chi_it++) {
                 (*chi_it)->dump();
             }
         }
 
-        for (Function::iterator bit = fun.begin(), ebit = fun.end();
+        for (Function::iterator bit = fun->begin(), ebit = fun->end();
                 bit != ebit; ++bit) {
             BasicBlock& bb = *bit;
             if (bb.hasName())
@@ -671,8 +671,8 @@ void MemSSA::dumpMSSA(llvm::raw_ostream& Out) {
         }
 
         // dump return mu nodes
-        if (hasReturnMu(&fun)) {
-            MUSet & return_mus = getReturnMuSet(&fun);
+        if (hasReturnMu(fun)) {
+            MUSet & return_mus = getReturnMuSet(fun);
             for (MUSet::iterator mu_it = return_mus.begin(); mu_it != return_mus.end(); mu_it++) {
                 (*mu_it)->dump();
             }

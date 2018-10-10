@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@
  */
 
 #include "Util/CPPUtil.h"
+#include "MemoryModel/CHA.h"
 #include <cxxabi.h>   // for demangling
 #include "Util/BasicTypes.h"
 #include <llvm/IR/GlobalVariable.h>	// for GlobalVariable
@@ -223,11 +224,36 @@ bool cppUtil::isVirtualCallSite(CallSite cs) {
 }
 
 const Value *cppUtil::getVCallThisPtr(CallSite cs) {
-    if (cs.paramHasAttr(1, Attribute::StructRet)) {
+    if (cs.paramHasAttr(0, Attribute::StructRet)) {
         return cs.getArgument(1);
     } else {
         return cs.getArgument(0);
     }
+}
+
+bool cppUtil::isSameThisPtrInConstructor(const Argument* thisPtr1, const Value* thisPtr2) {
+	if (thisPtr1 == thisPtr2){
+		return true;
+	}
+	else {
+		for (const User *thisU : thisPtr1->users()) {
+			if (const StoreInst *store = dyn_cast<StoreInst>(thisU)) {
+				for (const User *storeU : store->getPointerOperand()->users()) {
+					if (const LoadInst *load = dyn_cast<LoadInst>(storeU)) {
+						return load == (thisPtr2->stripPointerCasts());
+					}
+				}
+			}
+		}
+		return false;
+	}
+}
+
+const Argument *cppUtil::getConstructorThisPtr(const Function* fun) {
+	assert((isConstructor(fun) || isDestructor(fun)) && "not a constructor?");
+	assert(fun->arg_size() >=1 && "argument size >= 1?");
+	const Argument* thisPtr =  &*(fun->arg_begin());
+	return thisPtr;
 }
 
 /*
@@ -247,7 +273,7 @@ const Value *cppUtil::getVCallVtblPtr(CallSite cs) {
     return vtbl;
 }
 
-size_t cppUtil::getVCallIdx(llvm::CallSite cs) {
+u64_t cppUtil::getVCallIdx(llvm::CallSite cs) {
     const LoadInst *vfuncloadinst = dyn_cast<LoadInst>(cs.getCalledValue());
     assert(vfuncloadinst != NULL);
     const Value *vfuncptr = vfuncloadinst->getPointerOperand();
@@ -255,7 +281,7 @@ size_t cppUtil::getVCallIdx(llvm::CallSite cs) {
         dyn_cast<GetElementPtrInst>(vfuncptr);
     User::const_op_iterator oi = vfuncptrgepinst->idx_begin();
     const ConstantInt *idx = dyn_cast<ConstantInt>(*oi);
-    size_t idx_value;
+    u64_t idx_value;
     if (idx == NULL) {
         errs() << "vcall gep idx not constantint\n";
         idx_value = 0;
@@ -281,7 +307,7 @@ string cppUtil::getClassNameFromType(const Type *ty) {
     return className;
 }
 
-string cppUtil::getClassNameFromVtblVal(const Value *value) {
+string cppUtil::getClassNameFromVtblObj(const Value *value) {
     string className = "";
 
     string vtblName = value->getName().str();
@@ -298,6 +324,8 @@ string cppUtil::getClassNameFromVtblVal(const Value *value) {
 }
 
 bool cppUtil::isConstructor(const Function *F) {
+    if (F->isDeclaration())
+        return false;
     string funcName = F->getName().str();
     if (funcName.compare(0, vfunPreLabel.size(), vfunPreLabel) != 0) {
         return false;
@@ -312,13 +340,15 @@ bool cppUtil::isConstructor(const Function *F) {
         dname.className = getBeforeBrackets(dname.className.substr(colon+2));
     }
     if ((dname.className.size() > 0 && dname.className.compare(dname.funcName) == 0)
-    		|| (dname.funcName.size() == 0) ) /// on mac os function name is an empty string after demangling
+            || (dname.funcName.size() == 0) ) /// on mac os function name is an empty string after demangling
         return true;
     else
         return false;
 }
 
 bool cppUtil::isDestructor(const Function *F) {
+    if (F->isDeclaration())
+        return false;
     string funcName = F->getName().str();
     if (funcName.compare(0, vfunPreLabel.size(), vfunPreLabel) != 0) {
         return false;
@@ -339,4 +369,51 @@ bool cppUtil::isDestructor(const Function *F) {
         return true;
     else
         return false;
+}
+
+string cppUtil::getClassNameOfThisPtr(CallSite cs) {
+    string thisPtrClassName;
+    Instruction *inst = cs.getInstruction();
+    if (MDNode *N = inst->getMetadata("VCallPtrType")) {
+        MDString *mdstr = cast<MDString>(N->getOperand(0));
+        thisPtrClassName = mdstr->getString().str();
+    }
+    if (thisPtrClassName.size() == 0) {
+        const Value *thisPtr = getVCallThisPtr(cs);
+        thisPtrClassName = getClassNameFromType(thisPtr->getType());
+    }
+
+    size_t found = thisPtrClassName.find_last_not_of("0123456789");
+    if (found != string::npos) {
+        if (found != thisPtrClassName.size() - 1 && thisPtrClassName[found] == '.') {
+            return thisPtrClassName.substr(0, found);
+        }
+    }
+
+    return thisPtrClassName;
+}
+
+string cppUtil::getFunNameOfVCallSite(CallSite cs) {
+    string funName;
+    Instruction *inst = cs.getInstruction();
+    if (MDNode *N = inst->getMetadata("VCallFunName")) {
+        MDString *mdstr = cast<MDString>(N->getOperand(0));
+        funName = mdstr->getString().str();
+    }
+    return funName;
+}
+
+
+/*
+ * Is this virtual call inside its own constructor or destructor?
+ */
+bool cppUtil::VCallInCtorOrDtor(CallSite cs)  {
+    std::string classNameOfThisPtr = getClassNameOfThisPtr(cs);
+    const Function *func = cs.getCaller();
+    if (isConstructor(func) || isDestructor(func)) {
+        struct DemangledName dname = demangle(func->getName().str());
+        if (classNameOfThisPtr.compare(dname.className) == 0)
+            return true;
+    }
+    return false;
 }

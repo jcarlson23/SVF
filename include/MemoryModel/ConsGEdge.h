@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -266,6 +266,11 @@ public:
     /// Get location set of the gep edge
     inline const LocationSet& getLocationSet() const {
         return ls;
+    }
+
+    /// Get location set of the gep edge
+    inline const u32_t getOffset() const {
+        return ls.getOffset();
     }
 };
 

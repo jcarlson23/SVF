@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -35,9 +35,6 @@
 
 using namespace llvm;
 using namespace analysisUtil;
-
-static cl::opt<bool> HANDLEVGEP("vgep", cl::init(true),
-                                cl::desc("Hanle variant gep/field edge"));
 
 static cl::opt<bool> HANDBLACKHOLE("blk", cl::init(false),
                                    cl::desc("Hanle blackhole edge"));
@@ -192,10 +189,6 @@ bool PAG::addNormalGepEdge(NodeID src, NodeID dst, const LocationSet& ls) {
  * Find the base node id of src and connect base node to dst node
  */
 bool PAG::addVariantGepEdge(NodeID src, NodeID dst) {
-    // Simply handling  Variant GEP as copy may cause unsoundness.
-    // For a pointer arithmetic "p = q + i", if q points to an object o, then p only points to o, but not any of o's fields.
-    if (HANDLEVGEP == false)
-        return addCopyEdge(src,dst);
 
     PAGNode* baseNode = getPAGNode(getBaseValNode(src));
     PAGNode* dstNode = getPAGNode(dst);
@@ -250,8 +243,15 @@ NodeID PAG::getGepValNode(const llvm::Value* val, const LocationSet& ls, const T
         assert((isa<Instruction>(curVal) || isa<GlobalVariable>(curVal)) && "curVal not an instruction or a globalvariable?");
         const std::vector<FieldInfo> &fieldinfo = symInfo->getFlattenFieldInfoVec(baseType);
         const Type *type = fieldinfo[fieldidx].getFlattenElemTy();
+
+        // We assume every GepValNode and its GepEdge to the baseNode are unique across the whole program
+        // We preserve the current BB information to restore it after creating the gepNode
+        const llvm::Value* cval = pag->getCurrentValue();
+        const llvm::BasicBlock* cbb = pag->getCurrentBB();
+        pag->setCurrentLocation(curVal, NULL);
         NodeID gepNode= addGepValNode(val,ls,nodeNum,type,fieldidx);
         addGepEdge(base, gepNode, ls, true);
+        pag->setCurrentLocation(cval, cbb);
         return gepNode;
     } else
         return iter->second;
@@ -260,14 +260,14 @@ NodeID PAG::getGepValNode(const llvm::Value* val, const LocationSet& ls, const T
 /*!
  * Add a temp field value node, this method can only invoked by getGepValNode
  */
-NodeID PAG::addGepValNode(const llvm::Value* val, const LocationSet& ls, NodeID i, const llvm::Type *type, u32_t fieldidx) {
-    NodeID base = getBaseValNode(getValueNode(val));
+NodeID PAG::addGepValNode(const llvm::Value* gepVal, const LocationSet& ls, NodeID i, const llvm::Type *type, u32_t fieldidx) {
+	NodeID base = getBaseValNode(getValueNode(gepVal));
     //assert(findPAGNode(i) == false && "this node should not be created before");
-    assert(0==GepValNodeMap.count(std::make_pair(base, ls))
+	assert(0==GepValNodeMap.count(std::make_pair(base, ls))
            && "this node should not be created before");
-    GepValNodeMap[std::make_pair(base, ls)] = i;
-    GepValPN *node = new GepValPN(val, i, ls, type, fieldidx);
-    return addValNode(val, node, i);
+	GepValNodeMap[std::make_pair(base, ls)] = i;
+    GepValPN *node = new GepValPN(gepVal, i, ls, type, fieldidx);
+    return addValNode(gepVal, node, i);
 }
 
 /*!
@@ -326,13 +326,13 @@ NodeID PAG::addGepObjNode(const MemObj* obj, const LocationSet& ls, NodeID i) {
 /*!
  * Add a field-insensitive node, this method can only invoked by getFIGepObjNode
  */
-NodeID PAG::addFIObjNode(const MemObj* obj, NodeID i)
+NodeID PAG::addFIObjNode(const MemObj* obj)
 {
     //assert(findPAGNode(i) == false && "this node should not be created before");
     NodeID base = getObjectNode(obj);
-    memToFieldsMap[base].set(i);
-    FIObjPN *node = new FIObjPN(obj->getRefVal(), i, obj);
-    return addObjNode(obj->getRefVal(), node, i);
+    memToFieldsMap[base].set(obj->getSymId());
+    FIObjPN *node = new FIObjPN(obj->getRefVal(), obj->getSymId(), obj);
+    return addObjNode(obj->getRefVal(), node, obj->getSymId());
 }
 
 
@@ -370,7 +370,9 @@ void PAG::setCurrentBBAndValueForPAGEdge(PAGEdge* edge) {
     edge->setBB(curBB);
     edge->setValue(curVal);
     if (const Instruction *curInst = dyn_cast<Instruction>(curVal)) {
-        assert(curBB && "instruction does not have a basic block??");
+ 	/// We assume every GepValPN and its GepPE are unique across whole program
+	if(!(isa<GepPE>(edge) && isa<GepValPN>(edge->getDstNode())))
+		assert(curBB && "instruction does not have a basic block??");
         inst2PAGEdgesMap[curInst].push_back(edge);
     } else if (isa<Argument>(curVal)) {
         assert(curBB && (&curBB->getParent()->getEntryBlock() == curBB));
@@ -404,9 +406,9 @@ bool PAG::addEdge(PAGNode* src, PAGNode* dst, PAGEdge* edge) {
     dst->addInEdge(edge);
     bool added = PAGEdgeKindToSetMap[edge->getEdgeKind()].insert(edge).second;
     assert(added && "duplicated edge, not added!!!");
-    setCurrentBBAndValueForPAGEdge(edge);
+	if (!SVFModule::pagReadFromTXT())
+		setCurrentBBAndValueForPAGEdge(edge);
     return true;
-
 }
 
 /*!
@@ -512,34 +514,79 @@ void PAG::destroy() {
  * Print this PAG graph including its nodes and edges
  */
 void PAG::print() {
-    for (iterator I = begin(), E = end(); I != E; ++I) {
-        PAGNode* node = I->second;
-        if (!isa<DummyValPN>(node) && !isa<DummyObjPN>(node)) {
-            outs() << "node " << node->getId() << " " << *(node->getValue())
-                   << "\n";
-            outs() << "\t InEdge: { ";
-            for (PAGNode::iterator iter = node->getInEdges().begin();
-                    iter != node->getInEdges().end(); ++iter) {
-                outs() << (*iter)->getSrcID() << " ";
-                if (NormalGepPE* edge = dyn_cast<NormalGepPE>(*iter))
-                    outs() << " offset=" << edge->getOffset() << " ";
-                else if (isa<VariantGepPE>(*iter))
-                    outs() << " offset=variant";
-            }
-            outs() << "}\t";
-            outs() << "\t OutEdge: { ";
-            for (PAGNode::iterator iter = node->getOutEdges().begin();
-                    iter != node->getOutEdges().end(); ++iter) {
-                outs() << (*iter)->getDstID() << " ";
-                if (NormalGepPE* edge = dyn_cast<NormalGepPE>(*iter))
-                    outs() << " offset=" << edge->getOffset() << " ";
-                else if (isa<VariantGepPE>(*iter))
-                    outs() << " offset=variant";
-            }
-            outs() << "}\n";
-        }
-        outs() << "\n";
-    }
+
+	outs() << "-------------------PAG------------------------------------\n";
+	PAGEdge::PAGEdgeSetTy& addrs = pag->getEdgeSet(PAGEdge::Addr);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = addrs.begin(), eiter =
+			addrs.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Addr --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& copys = pag->getEdgeSet(PAGEdge::Copy);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = copys.begin(), eiter =
+			copys.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Copy --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& calls = pag->getEdgeSet(PAGEdge::Call);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = calls.begin(), eiter =
+			calls.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Call --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& rets = pag->getEdgeSet(PAGEdge::Ret);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = rets.begin(), eiter =
+			rets.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Ret --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& tdfks = pag->getEdgeSet(PAGEdge::ThreadFork);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = tdfks.begin(), eiter =
+			tdfks.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- ThreadFork --> "
+				<< (*iter)->getDstID() << "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& tdjns = pag->getEdgeSet(PAGEdge::ThreadJoin);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = tdjns.begin(), eiter =
+			tdjns.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- ThreadJoin --> "
+				<< (*iter)->getDstID() << "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& ngeps = pag->getEdgeSet(PAGEdge::NormalGep);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = ngeps.begin(), eiter =
+			ngeps.end(); iter != eiter; ++iter) {
+		NormalGepPE* gep = cast<NormalGepPE>(*iter);
+		outs() << gep->getSrcID() << " -- NormalGep (" << gep->getOffset()
+				<< ") --> " << gep->getDstID() << "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& vgeps = pag->getEdgeSet(PAGEdge::VariantGep);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = vgeps.begin(), eiter =
+			vgeps.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- VariantGep --> "
+				<< (*iter)->getDstID() << "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& loads = pag->getEdgeSet(PAGEdge::Load);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = loads.begin(), eiter =
+			loads.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Load --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+
+	PAGEdge::PAGEdgeSetTy& stores = pag->getEdgeSet(PAGEdge::Store);
+	for (PAGEdge::PAGEdgeSetTy::iterator iter = stores.begin(), eiter =
+			stores.end(); iter != eiter; ++iter) {
+		outs() << (*iter)->getSrcID() << " -- Store --> " << (*iter)->getDstID()
+				<< "\n";
+	}
+	outs() << "----------------------------------------------------------\n";
 
 }
 
@@ -611,12 +658,6 @@ void PAG::dump(std::string name) {
     GraphPrinter::WriteGraphToFile(llvm::outs(), name, this);
 }
 
-/*!
- * Whether to handle variant gep/field edge
- */
-void PAG::handleVGep(bool b) {
-    HANDLEVGEP = b;
-}
 
 /*!
  * Whether to handle blackhole edge
@@ -661,7 +702,7 @@ struct DOTGraphTraits<PAG*> : public DefaultDOTGraphTraits {
                 rawstr << node->getId();
         } else {
             // print the whole value
-            if (!isa<DummyValPN>(node) || !isa<DummyObjPN>(node))
+            if (!isa<DummyValPN>(node) && !isa<DummyObjPN>(node))
                 rawstr << *node->getValue();
             else
                 rawstr << "";

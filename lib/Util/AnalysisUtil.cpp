@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -29,7 +29,7 @@
 
 #include "Util/AnalysisUtil.h"
 
-#include <llvm/Transforms/Utils/Local.h>	// for FindAllocaDbgDeclare
+#include <llvm/Transforms/Utils/Local.h>	// for FindDbgAddrUses
 #include <llvm/IR/GlobalVariable.h>	// for GlobalVariable
 #include <llvm/IR/Module.h>	// for Module
 #include <llvm/IR/InstrTypes.h>	// for TerminatorInst
@@ -42,6 +42,8 @@
 #include <llvm/IR/CFG.h>		// for CFG
 #include "Util/Conditions.h"
 #include <sys/resource.h>		/// increase stack size
+#include <llvm/IRReader/IRReader.h>     /// for isIRFile
+#include <llvm/Bitcode/BitcodeReader.h>     /// for isBitcode
 
 using namespace llvm;
 
@@ -154,6 +156,20 @@ bool analysisUtil::isDeadFunction (const llvm::Function * fun) {
         if (isa<CallInst>(*i) || isa<InvokeInst>(*i))
             return false;
     }
+    SVFModule svfModule;
+    if (svfModule.hasDeclaration(fun)) {
+        const SVFModule::FunctionSetType &decls = svfModule.getDeclaration(fun);
+        for (SVFModule::FunctionSetType::const_iterator it = decls.begin(),
+                eit = decls.end(); it != eit; ++it) {
+            const llvm::Function *decl = *it;
+            if(decl->hasAddressTaken())
+                return false;
+            for (llvm::Value::const_user_iterator i = decl->user_begin(), e = decl->user_end(); i != e; ++i) {
+                if (llvm::isa<llvm::CallInst>(*i) || llvm::isa<llvm::InvokeInst>(*i))
+                    return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -253,23 +269,13 @@ std::string analysisUtil::getSourceLocOfFunction(const llvm::Function *F)
 {
     std::string str;
     raw_string_ostream rawstr(str);
-    NamedMDNode* CU_Nodes = F->getParent()->getNamedMetadata("llvm.dbg.cu");
-    if(CU_Nodes) {
-      /*
-       * Looks like the DICompileUnt->getSubprogram was moved into Function::
-       */
-        for (unsigned i = 0, e = CU_Nodes->getNumOperands(); i != e; ++i) {
-            DICompileUnit *CUNode = cast<DICompileUnit>(CU_Nodes->getOperand(i));
-	    /*
-	     * https://reviews.llvm.org/D18074?id=50385 
-	     * looks like the relevant
-	     */
-            if (DISubprogram *SP =  F->getSubprogram()) {
-                if (SP->describes(F))
-                    rawstr << "in line: " << SP->getLine()
-                           << " file: " << SP->getFilename();
-            }
-        }
+   /*	
+    * https://reviews.llvm.org/D18074?id=50385	
+    * looks like the relevant	
+    */
+    if (DISubprogram *SP =  F->getSubprogram()) {
+        if (SP->describes(F))
+            rawstr << "in line: " << SP->getLine() << " file: " << SP->getFilename();
     }
     return rawstr.str();
 }
@@ -284,10 +290,12 @@ std::string analysisUtil::getSourceLoc(const Value* val) {
     raw_string_ostream rawstr(str);
     if (const Instruction *inst = dyn_cast<Instruction>(val)) {
         if (isa<AllocaInst>(inst)) {
-            DbgDeclareInst* DDI = llvm::FindAllocaDbgDeclare(const_cast<Instruction*>(inst));
-            if (DDI) {
-                DIVariable *DIVar = cast<DIVariable>(DDI->getVariable());
-                rawstr << "ln: " << DIVar->getLine() << " fl: " << DIVar->getFilename();
+            for (DbgInfoIntrinsic *DII : FindDbgAddrUses(const_cast<Instruction*>(inst))) {
+                if (DbgDeclareInst *DDI = dyn_cast<DbgDeclareInst>(DII)) {
+                    DIVariable *DIVar = cast<DIVariable>(DDI->getVariable());
+                    rawstr << "ln: " << DIVar->getLine() << " fl: " << DIVar->getFilename();
+                    break;
+                }
             }
         }
         else if (MDNode *N = inst->getMetadata("dbg")) { // Here I is an LLVM instruction
@@ -317,12 +325,12 @@ std::string analysisUtil::getSourceLoc(const Value* val) {
             for (unsigned i = 0, e = CU_Nodes->getNumOperands(); i != e; ++i) {
                 DICompileUnit *CUNode = cast<DICompileUnit>(CU_Nodes->getOperand(i));
                 for (DIGlobalVariableExpression *GV : CUNode->getGlobalVariables()) {
-		  DIGlobalVariable * DGV = GV->getVariable();
+                    DIGlobalVariable * DGV = GV->getVariable();
 
-		  /*
-		  if ( gvar == DGV )
+                    if(DGV->getName() == gvar->getName()){
                         rawstr << "ln: " << DGV->getLine() << " fl: " << DGV->getFilename();
-		  */
+                    }
+
                 }
             }
         }
@@ -474,6 +482,49 @@ void analysisUtil::increaseStackSize()
             result = setrlimit(RLIMIT_STACK, &rl);
             if (result != 0)
                 llvm::outs() << "setrlimit returned result = " << result << "\n";
+        }
+    }
+}
+
+/*
+ * Reference functions:
+ * llvm::parseIRFile (lib/IRReader/IRReader.cpp)
+ * llvm::parseIR (lib/IRReader/IRReader.cpp)
+ */
+bool analysisUtil::isIRFile(const std::string &filename) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr = MemoryBuffer::getFileOrSTDIN(filename);
+    if (FileOrErr.getError())
+        return false;
+    MemoryBufferRef Buffer = FileOrErr.get()->getMemBufferRef();
+    const unsigned char *bufferStart =
+        (const unsigned char *)Buffer.getBufferStart();
+    const unsigned char *bufferEnd =
+        (const unsigned char *)Buffer.getBufferEnd();
+    return isBitcode(bufferStart, bufferEnd) ? true :
+           Buffer.getBuffer().startswith("; ModuleID =");
+}
+
+
+/// Get the names of all modules into a vector
+/// And process arguments
+void analysisUtil::processArguments(int argc, char **argv, int &arg_num, char **arg_value,
+                                    std::vector<std::string> &moduleNameVec) {
+    bool first_ir_file = true;
+    for (s32_t i = 0; i < argc; ++i) {
+        std::string argument(argv[i]);
+        size_t arg_len = argument.size();
+        if (analysisUtil::isIRFile(argument)) {
+            if (find(moduleNameVec.begin(), moduleNameVec.end(), argument)
+                    == moduleNameVec.end())
+                moduleNameVec.push_back(argument);
+            if (first_ir_file) {
+                arg_value[arg_num] = argv[i];
+                arg_num++;
+                first_ir_file = false;
+            }
+        } else {
+            arg_value[arg_num] = argv[i];
+            arg_num++;
         }
     }
 }

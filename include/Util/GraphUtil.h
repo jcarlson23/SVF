@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -58,7 +58,7 @@ public:
         std::string Filename = GraphName + ".dot";
         O << "Writing '" << Filename << "'...";
         std::error_code ErrInfo;
-        tool_output_file F(Filename.c_str(), ErrInfo, sys::fs::F_None);
+        ToolOutputFile F(Filename.c_str(), ErrInfo, sys::fs::F_None);
 
         if (!ErrInfo) {
             // dump the ValueFlowGraph here

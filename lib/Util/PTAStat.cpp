@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -194,6 +194,10 @@ void PTAStat::performStat() {
     generalNumMap["LocalVarInRecur"] = localVarInRecursion.count();
     bitcastInstStat();
     branchStat();
+
+    printStat();
+
+    generalNumMap.clear();
 }
 
 void PTAStat::callgraphStat() {
@@ -252,7 +256,7 @@ void PTAStat::callgraphStat() {
 
 void PTAStat::printStat() {
 
-    StringRef fullName(SymbolTableInfo::Symbolnfo()->getModule()->getModuleIdentifier());
+    StringRef fullName(SymbolTableInfo::Symbolnfo()->getModule().getModuleIdentifier());
     StringRef name = fullName.split('/').second;
     moduleName = name.split('.').first.str();
     std::cout << "################ (program : " << moduleName << ")###############\n";
@@ -278,12 +282,12 @@ void PTAStat::printStat() {
 
 
 void PTAStat::bitcastInstStat() {
-    llvm::Module* module = pta->getModule();
+    SVFModule module = pta->getModule();
     u32_t numberOfBitCast = 0;
-    for (llvm::Module::const_iterator funIter = module->begin(), funEiter = module->end();
+    for (SVFModule::const_iterator funIter = module.begin(), funEiter = module.end();
             funIter != funEiter; ++funIter) {
-        const llvm::Function& func = *funIter;
-        for (llvm::Function::const_iterator bbIt = func.begin(), bbEit = func.end();
+        const llvm::Function* func = *funIter;
+        for (llvm::Function::const_iterator bbIt = func->begin(), bbEit = func->end();
                 bbIt != bbEit; ++bbIt) {
             const llvm::BasicBlock& bb = *bbIt;
             for (llvm::BasicBlock::const_iterator instIt = bb.begin(), instEit = bb.end();
@@ -301,13 +305,13 @@ void PTAStat::bitcastInstStat() {
 }
 
 void PTAStat::branchStat() {
-    llvm::Module* module = pta->getModule();
+    SVFModule module = pta->getModule();
     u32_t numOfBB_2Succ = 0;
     u32_t numOfBB_3Succ = 0;
-    for (llvm::Module::const_iterator funIter = module->begin(), funEiter = module->end();
+    for (SVFModule::const_iterator funIter = module.begin(), funEiter = module.end();
             funIter != funEiter; ++funIter) {
-        const llvm::Function& func = *funIter;
-        for (llvm::Function::const_iterator bbIt = func.begin(), bbEit = func.end();
+        const llvm::Function* func = *funIter;
+        for (llvm::Function::const_iterator bbIt = func->begin(), bbEit = func->end();
                 bbIt != bbEit; ++bbIt) {
             const llvm::BasicBlock& bb = *bbIt;
             u32_t numOfSucc = bb.getTerminator()->getNumSuccessors();

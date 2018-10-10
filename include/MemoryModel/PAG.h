@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -63,6 +63,7 @@ public:
     typedef std::pair<NodeID, LocationSet> NodeLocationSet;
     typedef llvm::DenseMap<NodeOffset,NodeID,llvm::DenseMapInfo<std::pair<NodeID,Size_t> > > NodeOffsetMap;
     typedef std::map<NodeLocationSet,NodeID> NodeLocationSetMap;
+    typedef std::map<NodePair,NodeID> NodePairSetMap;
 
 private:
     SymbolTableInfo* symInfo;
@@ -145,13 +146,11 @@ public:
     }
     /// PAG build configurations
     //@{
-    /// Whether to handle variant gep/field edge
-    static void handleVGep(bool b);
     /// Whether to handle blackhole edge
     static void handleBlackHole(bool b);
     //@}
     /// Get LLVM Module
-    static inline llvm::Module* getModule() {
+    inline SVFModule getModule() {
         return SymbolTableInfo::Symbolnfo()->getModule();
     }
     /// Get/set methods to get control flow information of a PAGEdge
@@ -444,16 +443,10 @@ public:
         return (isBlkObj(id) || isConstantObj(id));
     }
     inline bool isBlkObj(NodeID id) const {
-        PAGNode* node = getPAGNode(id);
-        ObjPN* obj = llvm::dyn_cast<ObjPN>(node);
-        assert(obj && "not an object node?");
-        return (obj->getMemObj()->isBlackHoleObj());
+        return SymbolTableInfo::isBlkObj(id);
     }
     inline bool isConstantObj(NodeID id) const {
-        PAGNode* node = getPAGNode(id);
-        ObjPN* obj = llvm::dyn_cast<ObjPN>(node);
-        assert(obj && "not an object node?");
-        return (obj->getMemObj()->isConstantObj());
+        return SymbolTableInfo::isConstantObj(id);;
     }
     inline bool isTaintedObj(NodeID id) const {
         PAGNode* node = getPAGNode(id);
@@ -523,8 +516,8 @@ public:
     /// Add a memory obj node
     inline NodeID addObjNode(const llvm::Value* val, NodeID i) {
         MemObj* mem = symInfo->getObj(symInfo->getObjSym(val));
-        assert(mem->getSymId() == i && "not same object id?");
-        return addFIObjNode(mem, i);
+        assert(((mem->getSymId() == i) || (symInfo->getGlobalRep(val)!=val)) && "not same object id?");
+        return addFIObjNode(mem);
     }
     /// Add a unique return node for a procedure
     inline NodeID addRetNode(const llvm::Function* val, NodeID i) {
@@ -541,7 +534,7 @@ public:
     /// Add a field obj node, this method can only invoked by getGepObjNode
     NodeID addGepObjNode(const MemObj* obj, const LocationSet& ls, NodeID i);
     /// Add a field-insensitive node, this method can only invoked by getFIGepObjNode
-    NodeID addFIObjNode(const MemObj* obj, NodeID i);
+    NodeID addFIObjNode(const MemObj* obj);
     //@}
 
     ///  Add a dummy value/object node according to node ID (llvm value is null)
@@ -556,6 +549,13 @@ public:
         const MemObj* mem = SymbolTableInfo::Symbolnfo()->createDummyObj(nodeNum);
         return addObjNode(NULL, new DummyObjPN(nodeNum,mem), nodeNum);
     }
+    inline NodeID addDummyObjNode(NodeID i) {
+        const MemObj* mem = addDummyMemObj(i);
+        return addObjNode(NULL, new DummyObjPN(i,mem), i);
+    }
+    inline const MemObj* addDummyMemObj(NodeID i) {
+        return SymbolTableInfo::Symbolnfo()->createDummyObj(i);
+    }
     inline NodeID addBlackholeObjNode() {
         return addObjNode(NULL, new DummyObjPN(getBlackHoleNode(),getBlackHoleObj()), getBlackHoleNode());
     }
@@ -568,7 +568,7 @@ public:
     inline NodeID addNullPtrNode() {
         NodeID nullPtr = addDummyValNode(getNullPtr());
         /// let all undef value or non-determined pointers points-to black hole
-        llvm::LLVMContext &cxt = getModule()->getContext();
+        llvm::LLVMContext &cxt = getModule().getContext();
         llvm::ConstantPointerNull *constNull = llvm::ConstantPointerNull::get(llvm::Type::getInt8PtrTy(cxt));
         setCurrentLocation(constNull, NULL);
         addBlackHoleAddrEdge(symInfo->blkPtrSymID());
@@ -685,7 +685,7 @@ template<> struct GraphTraits<Inverse<PAGNode *> > : public GraphTraits<Inverse<
 };
 
 template<> struct GraphTraits<PAG*> : public GraphTraits<GenericGraph<PAGNode,PAGEdge>* > {
-   typedef PAGNode *NodeRef;
+    typedef PAGNode *NodeRef;
 };
 }
 #endif /* PAG_H_ */

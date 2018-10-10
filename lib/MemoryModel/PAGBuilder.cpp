@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -28,6 +28,7 @@
  */
 
 #include "MemoryModel/PAGBuilder.h"
+#include "Util/SVFModule.h"
 #include "Util/AnalysisUtil.h"
 #include "Util/CPPUtil.h"
 
@@ -44,17 +45,19 @@ using namespace analysisUtil;
 /*!
  * Start building PAG here
  */
-PAG* PAGBuilder::build(llvm::Module& module) {
+PAG* PAGBuilder::build(SVFModule svfModule) {
+    svfMod = svfModule;
     /// initial external library information
     /// initial PAG nodes
     initalNode();
     /// initial PAG edges:
-    /// handle globals
-    visitGlobal(module);
+    ///// handle globals
+    visitGlobal(svfModule);
+    ///// collect exception vals in the program
     /// handle functions
-    for (llvm::Module::iterator fit = module.begin(), efit = module.end();
+    for (SVFModule::iterator fit = svfModule.begin(), efit = svfModule.end();
             fit != efit; ++fit) {
-        llvm::Function& fun = *fit;
+        llvm::Function& fun = **fit;
         /// collect return node of function fun
         if(!analysisUtil::isExtCall(&fun)) {
             /// Return PAG node will not be created for function which can not
@@ -77,10 +80,7 @@ PAG* PAGBuilder::build(llvm::Module& module) {
                     if(I->getType()->isPointerTy())
                         pag->addBlackHoleAddrEdge(argValNodeId);
                 }
-                /// We do not add arguments of main (program entry) into argument list
-                /// Because, later we don't manipulate them for connection of formal and actual parameters
-                else
-                    pag->addFunArgs(&fun,pag->getPAGNode(argValNodeId));
+                pag->addFunArgs(&fun,pag->getPAGNode(argValNodeId));
             }
         }
         for (llvm::Function::iterator bit = fun.begin(), ebit = fun.end();
@@ -228,7 +228,7 @@ void PAGBuilder::processCE(const Value *val) {
  * FIXME:Here we only get the field that actually used in the program
  * We ignore the initialization of global variable field that not used in the program
  */
-NodeID PAGBuilder::getGlobalVarField(const GlobalVariable *gvar, u32_t offset, u32_t fieldidx) {
+NodeID PAGBuilder::getGlobalVarField(const GlobalVariable *gvar, u32_t offset) {
 
     // if the global variable do not have any field needs to be initialized
     if (offset == 0 && gvar->getInitializer()->getType()->isSingleValueType()) {
@@ -240,7 +240,7 @@ NodeID PAGBuilder::getGlobalVarField(const GlobalVariable *gvar, u32_t offset, u
         const Type *gvartype = gvar->getType();
         while (const PointerType *ptype = dyn_cast<PointerType>(gvartype))
             gvartype = ptype->getElementType();
-        return pag->getGepValNode(gvar, LocationSet(offset), gvartype, fieldidx);
+        return pag->getGepValNode(gvar, LocationSet(offset), gvartype, offset);
     }
 }
 
@@ -256,7 +256,7 @@ NodeID PAGBuilder::getGlobalVarField(const GlobalVariable *gvar, u32_t offset, u
  * struct Z n = {10,&z.s}; // store z.s n ,  &z.s constant expression (constant expression)
  */
 void PAGBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
-                               u32_t offset, u32_t fieldidx) {
+                               u32_t offset) {
     DBOUT(DPAGBuild,
           outs() << "global " << *gvar << " constant initializer: " << *C
           << "\n");
@@ -265,7 +265,7 @@ void PAGBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
         NodeID src = getValueNode(C);
         // get the field value if it is avaiable, otherwise we create a dummy field node.
         pag->setCurrentLocation(gvar, NULL);
-        NodeID field = getGlobalVarField(gvar, offset, fieldidx);
+        NodeID field = getGlobalVarField(gvar, offset);
 
         if (isa<GlobalVariable>(C) || isa<Function>(C)) {
             pag->setCurrentLocation(C, NULL);
@@ -282,7 +282,7 @@ void PAGBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
     } else if (isa<ConstantArray>(C)) {
         if (cppUtil::isValVtbl(gvar) == false)
             for (u32_t i = 0, e = C->getNumOperands(); i != e; i++)
-                InitialGlobal(gvar, cast<Constant>(C->getOperand(i)), offset, i);
+                InitialGlobal(gvar, cast<Constant>(C->getOperand(i)), offset);
 
     } else if (isa<ConstantStruct>(C)) {
         const StructType *sty = cast<StructType>(C->getType());
@@ -290,7 +290,7 @@ void PAGBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
             SymbolTableInfo::Symbolnfo()->getStructOffsetVec(sty);
         for (u32_t i = 0, e = C->getNumOperands(); i != e; i++) {
             u32_t off = offsetvect[i];
-            InitialGlobal(gvar, cast<Constant>(C->getOperand(i)), offset + off, i);
+            InitialGlobal(gvar, cast<Constant>(C->getOperand(i)), offset + off);
         }
 
     } else {
@@ -301,28 +301,29 @@ void PAGBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
 /*!
  *  Visit global variables for building PAG
  */
-void PAGBuilder::visitGlobal(llvm::Module& module) {
+void PAGBuilder::visitGlobal(SVFModule svfModule) {
 
     /// initialize global variable
-    for (Module::global_iterator I = module.global_begin(), E =
-                module.global_end(); I != E; ++I) {
-        GlobalVariable * gvar = &*I;
+    for (SVFModule::global_iterator I = svfModule.global_begin(), E =
+                svfModule.global_end(); I != E; ++I) {
+        GlobalVariable *gvar = *I;
         NodeID idx = getValueNode(gvar);
         NodeID obj = getObjectNode(gvar);
+
         pag->setCurrentLocation(gvar, NULL);
         pag->addAddrEdge(obj, idx);
 
         if (gvar->hasDefinitiveInitializer()) {
             Constant *C = gvar->getInitializer();
             DBOUT(DPAGBuild, outs() << "add global var node " << *gvar << "\n");
-            InitialGlobal(gvar, C, 0, 0);
+            InitialGlobal(gvar, C, 0);
         }
     }
 
     /// initialize global functions
-    for (Module::iterator I = module.begin(), E =
-                module.end(); I != E; ++I) {
-        Function * fun = &*I;
+    for (SVFModule::iterator I = svfModule.begin(), E =
+                svfModule.end(); I != E; ++I) {
+        Function *fun = *I;
         NodeID idx = getValueNode(fun);
         NodeID obj = getObjectNode(fun);
 
@@ -332,11 +333,11 @@ void PAGBuilder::visitGlobal(llvm::Module& module) {
     }
 
     // Handle global aliases (due to linkage of multiple bc files), e.g., @x = internal alias @y. We need to add a copy from y to x.
-    for (Module::alias_iterator I = module.alias_begin(), E = module.alias_end(); I != E; I++) {
-        NodeID dst = pag->getValueNode(&*I);
-        NodeID src = pag->getValueNode((*I).getAliasee());
-        processCE((*I).getAliasee());
-        pag->setCurrentLocation(&*I, NULL);
+    for (SVFModule::alias_iterator I = svfModule.alias_begin(), E = svfModule.alias_end(); I != E; I++) {
+        NodeID dst = pag->getValueNode(*I);
+        NodeID src = pag->getValueNode((*I)->getAliasee());
+        processCE((*I)->getAliasee());
+        pag->setCurrentLocation(*I, NULL);
         pag->addCopyEdge(src,dst);
     }
 }
@@ -910,6 +911,14 @@ void PAGBuilder::handleExtCall(CallSite cs, const Function *callee) {
                 }
                 break;
             }
+            case ExtAPI::EFT_STD_LIST_HOOK: {
+                Value *vSrc = cs.getArgument(0);
+                Value *vDst = cs.getArgument(1);
+                NodeID src = pag->getValueNode(vSrc);
+                NodeID dst = pag->getValueNode(vDst);
+                pag->addStoreEdge(src, dst);
+                break;
+            }
             case ExtAPI::CPP_EFT_A0R_A1: {
                 SymbolTableInfo* symTable = SymbolTableInfo::Symbolnfo();
                 if (symTable->getModelConstants()) {
@@ -941,6 +950,19 @@ void PAGBuilder::handleExtCall(CallSite cs, const Function *callee) {
                 }
                 break;
             }
+            case ExtAPI::CPP_EFT_DYNAMIC_CAST: {
+                Value *vArg0 = cs.getArgument(0);
+                Value *retVal = cs.getInstruction();
+                NodeID src = getValueNode(vArg0);
+                assert(src && "src not exist?");
+                NodeID dst = getValueNode(retVal);
+                assert(dst && "dst not exist?");
+                pag->addCopyEdge(src, dst);
+                break;
+            }
+            case ExtAPI::EFT_CXA_BEGIN_CATCH: {
+                break;
+            }
             //default:
             case ExtAPI::EFT_OTHER: {
                 if(isa<PointerType>(inst->getType())) {
@@ -957,12 +979,13 @@ void PAGBuilder::handleExtCall(CallSite cs, const Function *callee) {
         /// create inter-procedural PAG edges for thread forks
         if(isThreadForkCall(inst)) {
             if(const Function* forkedFun = getLLVMFunction(getForkedFun(inst)) ) {
+                forkedFun = getDefFunForMultipleModule(forkedFun);
                 const Value* actualParm = getActualParmAtForkSite(inst);
                 /// pthread_create has 1 arg.
                 /// apr_thread_create has 2 arg.
                 assert((forkedFun->arg_size() <= 2) && "Size of formal parameter of start routine should be one");
                 if(forkedFun->arg_size() <= 2 && forkedFun->arg_size() >= 1) {
-                    const Argument* formalParm = &(forkedFun->getArgumentList().front());
+                    const Argument* formalParm = &(*forkedFun->arg_begin());
                     /// Connect actual parameter to formal parameter of the start routine
                     if(isa<PointerType>(actualParm->getType()) && isa<PointerType>(formalParm->getType()) )
                         pag->addThreadForkEdge(pag->getValueNode(actualParm), pag->getValueNode(formalParm),inst);
@@ -985,7 +1008,7 @@ void PAGBuilder::handleExtCall(CallSite cs, const Function *callee) {
                 /// The task function of hare_parallel_for has 3 args.
                 assert((taskFunc->arg_size() == 3) && "Size of formal parameter of hare_parallel_for's task routine should be 3");
                 const Value* actualParm = getTaskDataAtHareParForSite(inst);
-                const Argument* formalParm = &(taskFunc->getArgumentList().front());
+                const Argument* formalParm = &(*taskFunc->arg_begin());
                 /// Connect actual parameter to formal parameter of the start routine
                 if(isa<PointerType>(actualParm->getType()) && isa<PointerType>(formalParm->getType()) )
                     pag->addThreadForkEdge(pag->getValueNode(actualParm), pag->getValueNode(formalParm),inst);
@@ -1049,80 +1072,75 @@ void PAGBuilder::sanityCheck() {
  */
 PAG* PAGBuilderFromFile::build() {
 
-    string line;
-    ifstream myfile(file.c_str());
-    if (myfile.is_open()) {
-        while (myfile.good()) {
-            getline(myfile, line);
+	string line;
+	ifstream myfile(file.c_str());
+	if (myfile.is_open()) {
+		while (myfile.good()) {
+			getline(myfile, line);
 
-            Size_t token_count = 0;
-            string tmps;
-            istringstream ss(line);
-            while (ss.good()) {
-                ss >> tmps;
-                token_count++;
-            }
+			Size_t token_count = 0;
+			string tmps;
+			istringstream ss(line);
+			while (ss.good()) {
+				ss >> tmps;
+				token_count++;
+			}
 
-            if (token_count == 0)
-                continue;
-            else if (token_count == 2) {
-                NodeID nodeId;
-                string nodetype;
-                istringstream ss(line);
-                ss >> nodeId;
-                ss >> nodetype;
-                outs() << "reading node :" << nodeId << "\n";
-                if (nodetype == "v")
-                    pag->addDummyValNode(nodeId);
-                else if (nodetype == "o") {
-                    pag->addDummyObjNode();
-                }
-                else
-                    assert(
-                        false
-                        && "format not support, pls specify node type");
-            }
+			if (token_count == 0)
+				continue;
 
-            // do not consider gep edge
-            else if (token_count == 3) {
-                NodeID nodeSrc;
-                NodeID nodeDst;
-                string edge;
-                istringstream ss(line);
-                ss >> nodeSrc;
-                ss >> edge;
-                ss >> nodeDst;
-                outs() << "reading edge :" << nodeSrc << " " << edge << " "
-                       << nodeDst << " \n";
-                addEdge(nodeSrc, nodeDst, 0, edge);
-            }
+			else if (token_count == 2) {
+				NodeID nodeId;
+				string nodetype;
+				istringstream ss(line);
+				ss >> nodeId;
+				ss >> nodetype;
+				outs() << "reading node :" << nodeId << "\n";
+				if (nodetype == "v")
+					pag->addDummyValNode(nodeId);
+				else if (nodetype == "o") {
+					const MemObj* mem = pag->addDummyMemObj(nodeId);
+					mem->getTypeInfo()->setFlag(ObjTypeInfo::HEAP_OBJ);
+					mem->getTypeInfo()->setFlag(ObjTypeInfo::HASPTR_OBJ);
+					pag->addFIObjNode(mem);
+				} else
+					assert(false && "format not support, pls specify node type");
+			}
 
-            // do consider gep edge
-            else if (token_count == 4) {
-                NodeID nodeSrc;
-                NodeID nodeDst;
-                Size_t offsetOrCSId;
-                string edge;
-                istringstream ss(line);
-                ss >> nodeSrc;
-                ss >> edge;
-                ss >> nodeDst;
-                ss >> offsetOrCSId;
-                outs() << "reading edge :" << nodeSrc << " " << edge << " "
-                       << nodeDst << " offsetOrCSId=" << offsetOrCSId << " \n";
-                addEdge(nodeSrc, nodeDst, offsetOrCSId, edge);
-            } else
-                outs() << "format not support, token count = " << token_count
-                       << "\n";
-        }
-        myfile.close();
-    }
+			// do consider gep edge
+			else if (token_count == 4) {
+				NodeID nodeSrc;
+				NodeID nodeDst;
+				Size_t offsetOrCSId;
+				string edge;
+				istringstream ss(line);
+				ss >> nodeSrc;
+				ss >> edge;
+				ss >> nodeDst;
+				ss >> offsetOrCSId;
+				outs() << "reading edge :" << nodeSrc << " " << edge << " "
+						<< nodeDst << " offsetOrCSId=" << offsetOrCSId << " \n";
+				addEdge(nodeSrc, nodeDst, offsetOrCSId, edge);
+			} else {
+				if (!line.empty()) {
+					outs() << "format not supported, token count = "
+							<< token_count << "\n";
+					assert(false && "format not supported");
+				}
+			}
+		}
+		myfile.close();
+	}
 
-    else
-        outs() << "Unable to open file\n";
+	else
+		outs() << "Unable to open file\n";
 
-    return pag;
+	/// new gep node's id from lower bound, nodeNum may not reflect the total nodes.
+	u32_t lower_bound = 1000;
+	for(u32_t i = 0; i < lower_bound; i++)
+		pag->incNodeNum();
 
+	return pag;
 }
 
 /*!
@@ -1135,15 +1153,23 @@ void PAGBuilderFromFile::addEdge(NodeID srcID, NodeID dstID,
     PAGNode* srcNode = pag->getPAGNode(srcID);
     PAGNode* dstNode = pag->getPAGNode(dstID);
 
-    if (edge == "addr")
+    /// sanity check for PAG from txt
+	assert(isa<ValPN>(dstNode) && "dst not an value node?");
+    if(edge=="addr")
+    		assert(isa<ObjPN>(srcNode) && "src not an value node?");
+    else
+		assert(!isa<ObjPN>(srcNode) && "src not an object node?");
+
+    if (edge == "addr"){
         pag->addAddrEdge(srcID, dstID);
+    }
     else if (edge == "copy")
         pag->addCopyEdge(srcID, dstID);
     else if (edge == "load")
         pag->addLoadEdge(srcID, dstID);
     else if (edge == "store")
         pag->addStoreEdge(srcID, dstID);
-    else if (edge == "normal-gep")
+    else if (edge == "gep")
         pag->addNormalGepEdge(srcID, dstID, LocationSet(offsetOrCSId));
     else if (edge == "variant-gep")
         pag->addVariantGepEdge(srcID, dstID);

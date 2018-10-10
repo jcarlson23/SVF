@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -291,6 +291,15 @@ protected:
     SVFGEdge* addRetDirectVFEdge(NodeID srcId, NodeID dstId, CallSiteID csId);
     //@}
 
+    /// sanitize Intra edges, verify that both nodes belong to the same function.
+    inline void checkIntraVFEdgeParents(SVFGNode *srcNode, SVFGNode *dstNode) {
+        const llvm::BasicBlock *srcBB = srcNode->getBB();
+        const llvm::BasicBlock *dstBB = dstNode->getBB();
+        if(srcBB != nullptr && dstBB != nullptr) {
+            assert(srcBB->getParent() == dstBB->getParent());
+        }
+    }
+    
     /// Add indirect def-use edges of a memory region between two statements,
     //@{
     SVFGEdge* addIntraIndirectVFEdge(NodeID srcId, NodeID dstId, const PointsTo& cpts);
@@ -634,7 +643,7 @@ struct GraphTraits<Inverse<SVFGNode *> > : public GraphTraits<Inverse<GenericNod
 };
 
 template<> struct GraphTraits<SVFG*> : public GraphTraits<GenericGraph<SVFGNode,SVFGEdge>* > {
-  typedef SVFGNode *NodeRef;
+    typedef SVFGNode *NodeRef;
 };
 }
 

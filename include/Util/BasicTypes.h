@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -91,6 +91,7 @@ typedef SmallVector16 CallStrCxt;
 #define DAndersen "ander"
 #define DSaber "saber"
 #define DMTA "mta"
+#define DCHA "cha"
 
 /*
  * Number of clock ticks per second. A clock tick is the unit by which

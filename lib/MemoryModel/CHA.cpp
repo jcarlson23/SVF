@@ -3,7 +3,7 @@
 //                     SVF: Static Value-Flow Analysis
 //
 // Copyright (C) <2013-2017>  <Yulei Sui>
-// 
+//
 
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -37,19 +37,20 @@
 #include <assert.h>
 #include <stack>
 #include "MemoryModel/CHA.h"
+#include "MemoryModel/MemModel.h"
 #include <llvm/Support/CommandLine.h>
 #include <llvm/IR/DebugInfo.h> // for debuginfo like DILocation
 #include <llvm/Support/DOTGraphTraits.h>	// for dot graph traits
+#include <llvm/IR/InstIterator.h> // for inst_iterator
 #include "Util/GraphUtil.h"
 #include "Util/AnalysisUtil.h"
+#include "Util/SVFModule.h"
 
 using namespace llvm;
 using namespace cppUtil;
 using namespace std;
 
-static cl::opt<bool>
-dumpGraph("dump-cha-graph", cl::init(false),
-          cl::desc("dump the class hierarchy graph"));
+static cl::opt<bool> dumpCHA("dump-cha", cl::init(false), cl::desc("dump the class hierarchy graph"));
 
 const string pureVirtualFunName = "__cxa_pure_virtual";
 
@@ -57,7 +58,7 @@ const string ztiLabel = "_ZTI";
 
 static bool hasEdge(const CHNode *src, const CHNode *dst,
                     CHEdge::CHEDGETYPE et) {
-    for (set<CHEdge*>::const_iterator it = src->getOutEdges().begin(),
+    for (CHEdge::CHEdgeSetTy::const_iterator it = src->getOutEdges().begin(),
             eit = src->getOutEdges().end(); it != eit; ++it) {
         CHNode *node = (*it)->getDstNode();
         CHEdge::CHEDGETYPE edgeType = (*it)->getEdgeType();
@@ -67,265 +68,123 @@ static bool hasEdge(const CHNode *src, const CHNode *dst,
     return false;
 }
 
-// collect ancestors and descendants for a given CHNode
-static void getAncestorsDescendants(const CHNode *node,
-                                    CHGraph::CHNodeSetTy &ancestors,
-                                    CHGraph::CHNodeSetTy &descendants) {
-    stack<const CHNode*> nodeStack;
-    CHGraph::CHNodeSetTy visitedNodes;
-
-    // ancestors
-    nodeStack.push(node);
-    while (!nodeStack.empty()) {
-        const CHNode *curnode = nodeStack.top();
-        nodeStack.pop();
-        ancestors.insert(curnode);
-        if (visitedNodes.find(curnode) == visitedNodes.end()) {
-            for (set<CHEdge*>::const_iterator it = curnode->getOutEdges().begin(),
-                    eit = curnode->getOutEdges().end(); it != eit; ++it) {
-                CHNode *node = (*it)->getDstNode();
-                if ((*it)->getEdgeType() == CHEdge::INHERITANCE)
-                    nodeStack.push(node);
-            }
-            visitedNodes.insert(curnode);
-        }
-    }
-    ancestors.erase(node);
-
-    // clear visitedNodes;
-    visitedNodes.clear();
-
-    // descendants
-    nodeStack.push(node);
-    while (!nodeStack.empty()) {
-        const CHNode *curnode = nodeStack.top();
-        nodeStack.pop();
-        descendants.insert(curnode);
-        if (visitedNodes.find(curnode) == visitedNodes.end()) {
-            for (set<CHEdge*>::const_iterator it = curnode->getInEdges().begin(),
-                    eit = curnode->getInEdges().end(); it != eit; ++it) {
-                CHNode *node = (*it)->getSrcNode();
-                if ((*it)->getEdgeType() == CHEdge::INHERITANCE)
-                    nodeStack.push(node);
-            }
-            visitedNodes.insert(curnode);
-        }
-    }
-    descendants.erase(node);
-}
-
-void CHNode::getVirtualFunctions(u32_t idx,
-                                 set<const Function*> &virtualFunctions) const {
-    vector<vector<const Function*>>::const_iterator it, eit;
-    for (it = virtualFunctionVectors.begin(),
+void CHNode::getVirtualFunctions(u32_t idx, FuncVector &virtualFunctions) const {
+    for (vector<FuncVector>::const_iterator it = virtualFunctionVectors.begin(),
             eit = virtualFunctionVectors.end(); it != eit; ++it) {
-        if ((*it).size() > idx) {
-            virtualFunctions.insert((*it)[idx]);
-        }
+        if ((*it).size() > idx)
+            virtualFunctions.push_back((*it)[idx]);
     }
 }
 
 CHGraph::~CHGraph() {
-    for (CHGraph::iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        delete node;
-    }
+    for (CHGraph::iterator it = this->begin(), eit = this->end(); it != eit; ++it)
+        delete it->second;
 }
 
-void CHGraph::buildCHG(s32_t libnum, unique_ptr<Module> *libmodules,
-                       const Module &M) {
-    double timeStart, timeEnd;
-    timeStart = CLOCK_IN_MS();
+void CHGraph::buildCHG() {
 
-    /// build ch on shared libs
-    for (s32_t i = 0; i < libnum; ++i) {
-        Module *m = libmodules[i].get();
-        if (m == NULL)
-            continue;
-        DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("construct CHGraph From lib " + m->getName().str() + " [" + to_string(i+1) + " of " + to_string(libnum) + "]...\n"));
-        constructCHGraphFromIR(*m);
-    }
+	double timeStart, timeEnd;
+	timeStart = CLOCK_IN_MS();
+	for (u32_t i = 0; i < svfMod.getModuleNum(); ++i) {
+		Module *M = svfMod.getModule(i);
+		assert(M && "module not found?");
+		DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("construct CHGraph From module "
+										+ M->getName().str() + "...\n"));
+		readInheritanceMetadataFromModule(*M);
+		for (Module::const_global_iterator I = M->global_begin(), E = M->global_end(); I != E; ++I)
+			buildCHGNodes(&(*I));
+		for (Module::const_iterator F = M->begin(), E = M->end(); F != E; ++F)
+			buildCHGNodes(&(*F));
+		for (Module::const_iterator F = M->begin(), E = M->end(); F != E; ++F)
+			buildCHGEdges(&(*F));
 
-    /// build ch on the target module
-    DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("construct CHGraph From IR " + M.getName().str() + "...\n"));
-    constructCHGraphFromIR(M);
+		analyzeVTables(*M);
+	}
 
-    DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("build Internal Maps ...\n"));
-    buildInternalMaps();
+	DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("build Internal Maps ...\n"));
+	buildInternalMaps();
 
-    timeEnd = CLOCK_IN_MS();
-    buildingCHGTime = (timeEnd - timeStart)/TIMEINTERVAL;
+	timeEnd = CLOCK_IN_MS();
+	buildingCHGTime = (timeEnd - timeStart) / TIMEINTERVAL;
+
+	if (dumpCHA)
+		dump("cha");
 }
 
-void CHGraph::buildCHG(const Module &M) {
-
-    double timeStart, timeEnd;
-    timeStart = CLOCK_IN_MS();
-
-    DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("construct CHGraph From IR " + M.getName().str() + "...\n"));
-    constructCHGraphFromIR(M);
-
-    DBOUT(DGENERAL, outs() << analysisUtil::pasMsg("build Internal Maps ...\n"));
-    buildInternalMaps();
-
-    timeEnd = CLOCK_IN_MS();
-    buildingCHGTime = (timeEnd - timeStart)/TIMEINTERVAL;
-
-    if (dumpGraph) {
-        printCH();
-        dump("class_hierarchy_graph");
-    }
+void CHGraph::buildCHGNodes(const GlobalValue *globalvalue) {
+	if (isValVtbl(globalvalue) && globalvalue->getNumOperands() > 0) {
+		const ConstantStruct *vtblStruct = llvm::dyn_cast<ConstantStruct>(globalvalue->getOperand(0));
+		assert(vtblStruct && "Initializer of a vtable not a struct?");
+		string className = getClassNameFromVtblObj(globalvalue);
+		if (!getNode(className))								    		createNode(className);
+	}
 }
 
-void CHGraph::constructCHGraphFromIR(const Module &M) {
-    readInheritanceMetadataFromModule(M);
-
-    for (Module::const_iterator F = M.begin(), E = M.end(); F != E; ++F) {
-        const Function &function = *F;
-        buildCHGOnFunction(&function);
-    }
-
-    analyzeVTables(M);
+void CHGraph::buildCHGNodes(const Function *F) {
+	if (isConstructor(F) || isDestructor(F)) {
+		struct DemangledName dname = demangle(F->getName().str());
+		DBOUT(DCHA, outs() << "\t build CHANode for class " + dname.className + "...\n");
+		if (!getNode(dname.className))
+			createNode(dname.className);
+	}
 }
+
+void CHGraph::buildCHGEdges(const Function *F) {
+	if (isConstructor(F) || isDestructor(F)) {
+		for (Function::const_iterator B = F->begin(), E = F->end(); B != E; ++B) {
+			for (BasicBlock::const_iterator I = B->begin(), E = B->end(); I != E; ++I) {
+				if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
+					CallSite cs = analysisUtil::getLLVMCallSite(&(*I));
+					connectInheritEdgeViaCall(F, cs);
+				} else if (const StoreInst *store = dyn_cast<StoreInst>(I)) {
+					connectInheritEdgeViaStore(F, store);
+				}
+			}
+		}
+	}
+}
+
 
 void CHGraph::buildInternalMaps() {
-    buildTemplateNameToInstancesMap();
     buildClassNameToAncestorsDescendantsMap();
-    buildArgsizeToVFunMap();
     buildVirtualFunctionToIDMap();
+    buildCSToCHAVtblsAndVfnsMap();
 }
 
-void CHGraph::dumpStats() const {
-    s32_t pure_abstract_class_num = 0,
-          multi_inheritance_class_num = 0;
-    for (CHGraph::const_iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        if (node->isPureAbstract())
-            pure_abstract_class_num++;
-        if (node->isMultiInheritance())
-            multi_inheritance_class_num++;
-    }
-    cout << "class_num:\t" << getTotalNodeNum() << '\n';
-    cout << "pure_abstract_class_num:\t" << pure_abstract_class_num << '\n';
-    cout << "multi_inheritance_class_num:\t" << multi_inheritance_class_num << '\n';
-    cout << "virtual function number:\t" <<
-         virtualFunctionToIDMap.size() << '\n';
-    cout << "build cha time: " << buildingCHGTime << "\n";
-
-    /*
-     * count the following info:
-     * vtblnum
-     * total vfunction
-     * vtbl max vfunction
-     * pure abstract class
-     */
-    s32_t vtblnum = 0,
-          vfunc_total = 0,
-          vtbl_max = 0,
-          pure_abstract = 0;
-    set<const Function*> allVirtualFunctions;
-    for (CHGraph::const_iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        if (node->isPureAbstract())
-            pure_abstract++;
-
-        s32_t vfuncs_size = 0;
-        const vector<vector<const Function*>> vecs =
-                                               node->getVirtualFunctionVectors();
-        for (vector<vector<const Function*>>::const_iterator vit = vecs.begin(),
-                veit = vecs.end(); vit != veit; ++vit) {
-            vfuncs_size += (*vit).size();
-            for (vector<const Function*>::const_iterator fit = (*vit).begin(),
-                    feit = (*vit).end(); fit != feit; ++fit) {
-                const Function *func = *fit;
-                allVirtualFunctions.insert(func);
-            }
-        }
-        if (vfuncs_size > 0) {
-            vtblnum++;
-            if (vfuncs_size > vtbl_max) {
-                vtbl_max = vfuncs_size;
-            }
-        }
-    }
-    vfunc_total = allVirtualFunctions.size();
-
-    cout << "vtblnum:\t" << vtblnum << '\n';
-    cout << "vtbl_average:\t" << (double)(vfunc_total)/vtblnum << '\n';
-    cout << "vtbl_max:\t" << vtbl_max << '\n';
-}
-
-void CHGraph::buildCHGOnFunction(const Function *F) {
-    if (F->isDeclaration()) {
+void CHGraph::connectInheritEdgeViaCall(const Function* caller, CallSite cs){
+    const Function *callee = analysisUtil::getCallee(cs);
+    if (callee == NULL)
         return;
-    } else if (isConstructor(F)) {
-        struct DemangledName dname = demangle(F->getName().str());
-        for (Function::const_iterator B = F->begin(), E = F->end(); B != E; ++B)  {
-            const BasicBlock &bb = *B;
-            buildCHGOnBasicBlock(&bb, dname.className, CONSTRUCTOR);
-        }
-    }
-    else if (isDestructor(F)) {
-        struct DemangledName dname = demangle(F->getName().str());
-        for (Function::const_iterator B = F->begin(), E = F->end(); B != E; ++B)  {
-            const BasicBlock &bb = *B;
-            buildCHGOnBasicBlock(&bb, dname.className, DESTRUCTOR);
-        }
-    } else {
-        return;
-    }
-}
 
-void CHGraph::buildCHGOnBasicBlock(const BasicBlock *B,
-                                   const string className,
-                                   RELATIONTYPE relationType) {
-    for (BasicBlock::const_iterator I = B->begin(), E = B->end(); I != E; ++I) {
-        if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
-            const Instruction &instruction = *I;
-            CallSite cs = analysisUtil::getLLVMCallSite(&instruction);
-            const Function *callee = analysisUtil::getCallee(cs);
-            if (callee == NULL)
-                continue;
-            if ((relationType == CONSTRUCTOR && isConstructor(callee)) ||
-                    (relationType == DESTRUCTOR && isDestructor(callee))) {
-                if (cs.arg_size() < 1)
-                  continue;
-                const Value *thisPtr = getVCallThisPtr(cs);
-                if (thisPtr != NULL) {
-                    struct DemangledName dname = demangle(callee->getName().str());
-                    if (!isa<CallInst>(thisPtr) && !isa<InvokeInst>(thisPtr) &&
-                            dname.className.size() > 0) {
-                        addEdge(className, dname.className, CHEdge::INHERITANCE);
-                    }
-                }
+    struct DemangledName dname = demangle(caller->getName().str());
+    if ((isConstructor(caller) && isConstructor(callee)) || (isDestructor(caller) && isDestructor(callee))) {
+        if (cs.arg_size() < 1 || (cs.arg_size() < 2 && cs.paramHasAttr(0, Attribute::StructRet)))
+            return;
+        const Value *csThisPtr = getVCallThisPtr(cs);
+        const Argument *consThisPtr = getConstructorThisPtr(caller);
+        bool samePtr = true; // isSameThisPtrInConstructor(consThisPtr,csThisPtr);
+        if (csThisPtr != NULL && samePtr) {
+            struct DemangledName basename = demangle(callee->getName().str());
+            if (!isa<CallInst>(csThisPtr) && !isa<InvokeInst>(csThisPtr) &&
+                    basename.className.size() > 0) {
+                addEdge(dname.className, basename.className, CHEdge::INHERITANCE);
             }
         }
     }
+}
 
-    if (relationType == DESTRUCTOR) {
-        for (BasicBlock::const_iterator I = B->begin(), E = B->end(); I != E; ++I) {
-            const Instruction *inst = &*I;
-            if (const StoreInst *storeInst = dyn_cast<StoreInst>(inst)) {
-                const Value *val = storeInst->getValueOperand();
-                if (const ConstantExpr *ce = dyn_cast<ConstantExpr>(val)) {
-                    u32_t opcode = ce->getOpcode();
-                    if (opcode == Instruction::BitCast) {
-                        const Value *bitcastval = ce->getOperand(0);
-                        if (const ConstantExpr *bcce = dyn_cast<ConstantExpr>(bitcastval)) {
-                            u32_t bcopcode = bcce->getOpcode();
-                            if (bcopcode == Instruction::GetElementPtr) {
-                                const Value *gepval = bcce->getOperand(0);
-                                if (isValVtbl(gepval)) {
-                                    string vtblClassName = getClassNameFromVtblVal(gepval);
-                                    if (vtblClassName.size() > 0 &&
-                                            className.compare(vtblClassName) != 0) {
-                                        addEdge(className, vtblClassName, CHEdge::INHERITANCE);
-                                    }
-                                }
-                            }
+void CHGraph::connectInheritEdgeViaStore(const Function* caller, const llvm::StoreInst* storeInst){
+    struct DemangledName dname = demangle(caller->getName().str());
+    if (const ConstantExpr *ce = dyn_cast<ConstantExpr>(storeInst->getValueOperand())) {
+        if (ce->getOpcode() == Instruction::BitCast) {
+            const Value *bitcastval = ce->getOperand(0);
+            if (const ConstantExpr *bcce = dyn_cast<ConstantExpr>(bitcastval)) {
+                if (bcce->getOpcode() == Instruction::GetElementPtr) {
+                    const Value *gepval = bcce->getOperand(0);
+                    if (isValVtbl(gepval)) {
+                        string vtblClassName = getClassNameFromVtblObj(gepval);
+                        if (vtblClassName.size() > 0 && dname.className.compare(vtblClassName) != 0) {
+                            addEdge(dname.className, vtblClassName, CHEdge::INHERITANCE);
                         }
                     }
                 }
@@ -354,8 +213,9 @@ void CHGraph::readInheritanceMetadataFromModule(const Module &M) {
 
 void CHGraph::addEdge(const string className, const string baseClassName,
                       CHEdge::CHEDGETYPE edgeType) {
-    CHNode *srcNode = getOrCreateNode(className);
-    CHNode *dstNode = getOrCreateNode(baseClassName);
+    CHNode *srcNode = getNode(className);
+    CHNode *dstNode = getNode(baseClassName);
+    assert(srcNode && dstNode && "node not found?");
 
     if (!hasEdge(srcNode, dstNode, edgeType)) {
         CHEdge *edge = new CHEdge(srcNode, dstNode, edgeType);
@@ -368,60 +228,29 @@ CHNode *CHGraph::getNode(const string name) const {
     for (CHGraph::const_iterator it = this->begin(), eit = this->end();
             it != eit; ++it) {
         CHNode *node = it->second;
-        if (node->getName() == name) {
+        if (node->getName() == name)
             return node;
-        }
     }
     return NULL;
 }
 
-CHNode *CHGraph::getOrCreateNode(const std::string name) {
-    CHNode *node = getNode(name);
-    if (node == NULL) {
-        node = new CHNode(name, classNum++);
-        addToNodeList(node);
-    }
-    return node;
-}
 
-void CHGraph::addToNodeList(CHNode *node) {
-    addGNode(node->getId(), node);
-    string className = node->getName();
-    if (className.size() > 0 && className[className.size() - 1] == '>') {
-        string templateName = getBeforeBrackets(className);
-        getOrCreateNode(templateName);
-    }
-}
-
-void CHGraph::printCH() const {
-    for (CHGraph::const_iterator it = this->begin(),
-            eit = this->end(); it != eit; ++it) {
-        const CHNode *node = it->second;
-        outs() << '\n' << node->getName() << '\n';
-        CHNodeSetTy ancestors, descendants, instances;
-        if (hasAncestors(node->getName())) {
-            CHNodeSetTy ancestors = getAncestors(node->getName());
-            for (CHNodeSetTy::const_iterator ait = ancestors.begin(),
-                    aeit = ancestors.end(); ait != aeit; ++ait) {
-                outs() << "ancesstor: " << (*ait)->getName() << '\n';
-            }
-        }
-        if (hasDescendants(node->getName())) {
-            CHNodeSetTy descendants = getDescendants(node->getName());
-            for (CHNodeSetTy::const_iterator dit = descendants.begin(),
-                    deit = descendants.end(); dit != deit; ++dit) {
-                outs() << "descendants: " << (*dit)->getName() << '\n';
-            }
-        }
-        if (hasInstances(node->getName())) {
-            CHNodeSetTy instances = getInstances(node->getName());
-            for (CHNodeSetTy::const_iterator iit = instances.begin(),
-                    ieit = instances.end(); iit != ieit; ++iit) {
-                outs() << "instances: " << (*iit)->getName() << '\n';
-            }
-        }
-    }
-    outs() << '\n';
+CHNode *CHGraph::createNode(const std::string className) {
+	assert(!getNode(className) && "this node should never be created before!");
+	CHNode * node = new CHNode(className, classNum++);
+	addGNode(node->getId(), node);
+	if (className.size() > 0 && className[className.size() - 1] == '>') {
+		string templateName = getBeforeBrackets(className);
+		CHNode* templateNode = getNode(templateName);
+		if (!templateNode) {
+			DBOUT(DCHA, outs() << "\t Create Template CHANode " + templateName + " for class " + className + "...\n");
+			templateNode = createNode(templateName);
+			templateNode->setTemplate();
+		}
+		addEdge(className, templateName, CHEdge::INSTANTCE);
+		addInstances(templateName,node);
+	}
+	return node;
 }
 
 /*
@@ -430,178 +259,55 @@ void CHGraph::printCH() const {
  * classNameToAncestorsMap
  */
 void CHGraph::buildClassNameToAncestorsDescendantsMap() {
-    for (CHGraph::const_iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        string className = node->getName();
 
-        CHNodeSetTy ancestors, descendants;
-        getAncestorsDescendants(node, ancestors, descendants);
-        classNameToAncestorsMap[className] = ancestors;
-        classNameToDescendantsMap[className] = descendants;
-    }
+	for (CHGraph::const_iterator it = this->begin(), eit = this->end();
+			it != eit; ++it) {
+		const CHNode *node = it->second;
+		WorkList worklist;
+		CHNodeSetTy visitedNodes;
+		worklist.push(node);
+		while (!worklist.empty()) {
+			const CHNode *curnode = worklist.pop();
+			if (visitedNodes.find(curnode) == visitedNodes.end()) {
+				for (CHEdge::CHEdgeSetTy::const_iterator it =
+						curnode->getOutEdges().begin(), eit =
+						curnode->getOutEdges().end(); it != eit; ++it) {
+					if ((*it)->getEdgeType() == CHEdge::INHERITANCE) {
+						CHNode *succnode = (*it)->getDstNode();
+						classNameToAncestorsMap[node->getName()].insert(succnode);
+						classNameToDescendantsMap[succnode->getName()].insert(node);
+						worklist.push(succnode);
+					}
+				}
+				visitedNodes.insert(curnode);
+			}
+		}
+	}
 }
 
-void CHGraph::buildTemplateNameToInstancesMap() {
-    for (CHGraph::const_iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        string className = node->getName();
-        if (className.size() > 0 && className[className.size() - 1] == '>') {
-            string templateName = getBeforeBrackets(className);
-            CHNode *templateNode = getNode(templateName);
-            assert(templateNode != NULL);
-            addEdge(className, templateName, CHEdge::INSTANTCE);
-            templateNode->setTemplate();
-            map<string, CHNodeSetTy>::iterator it =
-                templateNameToInstancesMap.find(templateName);
-            if (it != templateNameToInstancesMap.end())
-                it->second.insert(node);
-            else {
-                CHNodeSetTy instances;
-                instances.insert(node);
-                templateNameToInstancesMap[templateName] = instances;
-            }
-        }
-    }
-}
 
-bool CHGraph::hasAncestors(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = classNameToAncestorsMap.find(className);
-    return it != classNameToAncestorsMap.end();
-}
+const CHGraph::CHNodeSetTy& CHGraph::getInstancesAndDescendants(const string className) {
 
-const CHGraph::CHNodeSetTy &CHGraph::getAncestors(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = classNameToAncestorsMap.find(className);
-    assert(it != classNameToAncestorsMap.end());
-    return it->second;
-}
-
-bool CHGraph::hasDescendants(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = classNameToDescendantsMap.find(className);
-    return it != classNameToDescendantsMap.end();
-}
-
-const CHGraph::CHNodeSetTy &CHGraph::getDescendants(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = classNameToDescendantsMap.find(className);
-    assert(it != classNameToDescendantsMap.end());
-    return it->second;
-}
-
-bool CHGraph::hasInstances(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = templateNameToInstancesMap.find(className);
-    return it != templateNameToInstancesMap.end();
-}
-
-const CHGraph::CHNodeSetTy &CHGraph::getInstances(const string className) const {
-    map<string, CHNodeSetTy>::const_iterator it;
-    it = templateNameToInstancesMap.find(className);
-    assert(it != templateNameToInstancesMap.end());
-    return it->second;
-}
-
-CHGraph::CHNodeSetTy CHGraph::getTemplateInstancesAndDescendants(const string className) const {
-    CHNode *thisNode = getNode(className);
-    assert(thisNode->isTemplate());
-    CHNodeSetTy descendants, instances;
-    if (hasDescendants(className))
-        descendants = getDescendants(className);
-    if (hasInstances(className))
-        instances = getInstances(className);
-    for (CHNodeSetTy::const_iterator it = instances.begin(),
-            eit = instances.end(); it != eit; ++it) {
-        const CHNode *node = *it;
-        descendants.insert(node);
-        if (hasDescendants(node->getName())) {
-            CHNodeSetTy instance_descendants =
-                getDescendants(node->getName());
-            CHNodeSetTy::const_iterator dit, deit;
-            for (dit = instance_descendants.begin(), deit = instance_descendants.end();
-                    dit != deit; ++dit) {
-                const CHNode *dnode = *dit;
-                descendants.insert(dnode);
-            }
-        }
-    }
-    return descendants;
-}
-
-s32_t CHGraph::getVirtualFunctionID(const llvm::Function *vfn) const {
-    map<const Function*, s32_t>::const_iterator it =
-        virtualFunctionToIDMap.find(vfn);
-    if (it != virtualFunctionToIDMap.end())
-        return it->second;
-    else
-        return -1;
-}
-
-const Function *CHGraph::getVirtualFunctionBasedonID(s32_t id) const {
-    map<const Function*, s32_t>::const_iterator it, eit;
-    for (it = virtualFunctionToIDMap.begin(), eit = virtualFunctionToIDMap.end();
-            it != eit; ++it) {
-        if (it->second == id)
-            return it->first;
-    }
-    return NULL;
-}
-
-set<string> CHGraph::getDescendantsNames(const string className) const {
-    set<string> descendantsName;
-    CHNode *classNode = getNode(className);
-    if (classNode != NULL) {
-        CHNodeSetTy descendants;
-        if (classNode->isTemplate()) {
-            descendants = getTemplateInstancesAndDescendants(className);
-        } else if (hasDescendants(className)) {
-            descendants = getDescendants(className);
-        } else {
-        }
-        descendants.insert(classNode);
-        for (CHNodeSetTy::const_iterator it = descendants.begin(),
-                eit = descendants.end(); it != eit; ++it) {
-            descendantsName.insert((*it)->getName());
-        }
-    }
-    return descendantsName;
-}
-
-set<string> CHGraph::getAncestorsNames(const string className) const {
-    set<string> ancestorsName;
-    CHNode *classNode = getNode(className);
-    if (classNode != NULL) {
-        CHNodeSetTy ancestors;
-        if (hasAncestors(className)) {
-            ancestors = getAncestors(className);
-        }
-        ancestors.insert(classNode);
-        for (CHNodeSetTy::const_iterator it = ancestors.begin(),
-                eit = ancestors.end(); it != eit; ++it) {
-            ancestorsName.insert((*it)->getName());
-        }
-    }
-    return ancestorsName;
-}
-
-set<string> CHGraph::getInstancesNames(const string className) const {
-    set<string> instancesName;
-    CHNode *classNode = getNode(className);
-    if (classNode != NULL) {
-        CHNodeSetTy instances;
-        if (hasInstances(className)) {
-            instances = getInstances(className);
-            instances.insert(classNode);
-        }
-        for (CHNodeSetTy::const_iterator it = instances.begin(),
-                eit = instances.end(); it != eit; ++it) {
-            instancesName.insert((*it)->getName());
-        }
-    }
-    return instancesName;
+	NameToCHNodesMap::const_iterator it = classNameToInstAndDescsMap.find(className);
+	if (it != classNameToInstAndDescsMap.end()) {
+		return it->second;
+	} else {
+		classNameToInstAndDescsMap[className] = getDescendants(className);
+		if (getNode(className)->isTemplate()) {
+			const CHNodeSetTy& instances = getInstances(className);
+			for (CHNodeSetTy::const_iterator it = instances.begin(), eit = instances.end(); it != eit; ++it) {
+				const CHNode *node = *it;
+				classNameToInstAndDescsMap[className].insert(node);
+				const CHNodeSetTy& instance_descendants = getDescendants(node->getName());
+				for (CHNodeSetTy::const_iterator dit =
+						instance_descendants.begin(), deit =
+						instance_descendants.end(); dit != deit; ++dit) {
+					classNameToInstAndDescsMap[className].insert(*dit);
+				}
+			}
+		}
+		return classNameToInstAndDescsMap[className];
+	}
 }
 
 /*
@@ -644,8 +350,9 @@ void CHGraph::analyzeVTables(const Module &M) {
                 dyn_cast<ConstantStruct>(globalvalue->getOperand(0));
             assert(vtblStruct && "Initializer of a vtable not a struct?");
 
-            string vtblClassName = getClassNameFromVtblVal(globalvalue);
-            CHNode *node = getOrCreateNode(vtblClassName);
+            string vtblClassName = getClassNameFromVtblObj(globalvalue);
+            CHNode *node = getNode(vtblClassName);
+            assert(node && "node not found?");
 
             node->setVTable(globalvalue);
 
@@ -663,7 +370,7 @@ void CHGraph::analyzeVTables(const Module &M) {
                 bool pure_abstract = true;
                 u32_t i = 0;
                 while (i < vtbl->getNumOperands()) {
-                    vector<const Function*> virtualFunctions;
+                    CHNode::FuncVector virtualFunctions;
                     bool is_virtual = false; // virtual inheritance
                     int null_ptr_num = 0;
                     for (; i < vtbl->getNumOperands(); ++i) {
@@ -713,7 +420,6 @@ void CHGraph::analyzeVTables(const Module &M) {
                             assert(isa<Function>(bitcastValue) ||
                                    isa<GlobalValue>(bitcastValue));
                             if (const Function *func = dyn_cast<Function>(bitcastValue)) {
-                                node->addVirtualFunction(func);
                                 virtualFunctions.push_back(func);
                                 if (func->getName().str().compare(pureVirtualFunName) == 0) {
                                     pure_abstract &= true;
@@ -731,7 +437,6 @@ void CHGraph::analyzeVTables(const Module &M) {
                                     const Constant *aliasValue = alias->getAliasee();
                                     if (const Function *aliasFunc =
                                                 dyn_cast<Function>(aliasValue)) {
-                                        node->addVirtualFunction(aliasFunc);
                                         virtualFunctions.push_back(aliasFunc);
                                     } else if (const ConstantExpr *aliasconst =
                                                    dyn_cast<ConstantExpr>(aliasValue)) {
@@ -742,7 +447,6 @@ void CHGraph::analyzeVTables(const Module &M) {
                                             dyn_cast<Function>(aliasconst->getOperand(0));
                                         assert(aliasbitcastfunc &&
                                                "aliased bitcast in vtable not a function");
-                                        node->addVirtualFunction(aliasbitcastfunc);
                                         virtualFunctions.push_back(aliasbitcastfunc);
                                     } else {
                                         assert(false && "alias not function or bitcast");
@@ -774,77 +478,6 @@ void CHGraph::analyzeVTables(const Module &M) {
     }
 }
 
-/*
- * build argsizeToVFunMap for each CHNode;
- */
-void CHGraph::buildArgsizeToVFunMap() {
-    for (CHGraph::iterator it = this->begin(), eit = this->end();
-            it != eit; ++it) {
-        CHNode *node = it->second;
-        const vector<vector<const Function*>> vecs =
-                                               node->getVirtualFunctionVectors();
-        u32_t max_argsize = 0;
-        for (vector<vector<const Function*>>::const_iterator vit = vecs.begin(),
-                veit = vecs.end(); vit != veit; ++vit) {
-            for (vector<const Function*>::const_iterator fit = (*vit).begin(),
-                    feit = (*vit).end(); fit != feit; ++fit) {
-                const Function *func = *fit;
-                if (func->arg_size() > max_argsize)
-                    max_argsize = func->arg_size();
-            }
-        }
-
-        for (u32_t argsize = 1; argsize <= max_argsize; ++argsize) {
-            set<const Function*> functions;
-            for (vector<vector<const Function*>>::const_iterator vit = vecs.begin(),
-                    veit = vecs.end(); vit != veit; ++vit) {
-                for (vector<const Function*>::const_iterator fit = (*vit).begin(),
-                        feit = (*vit).end(); fit != feit; ++fit) {
-                    const Function *func = *fit;
-                    if (func->arg_size() == argsize)
-                        functions.insert(func);
-                }
-            }
-            if (functions.size() > 0)
-                node->setArgsizeToVFunMap(argsize, functions);
-        }
-    }
-
-}
-
-string CHGraph::getClassNameOfThisPtr(CallSite cs) const {
-    string thisPtrClassName;
-    Instruction *inst = cs.getInstruction();
-    if (MDNode *N = inst->getMetadata("VCallPtrType")) {
-        MDString *mdstr = cast<MDString>(N->getOperand(0));
-        thisPtrClassName = mdstr->getString().str();
-    }
-    if (thisPtrClassName.size() == 0) {
-        const Value *thisPtr = getVCallThisPtr(cs);
-        thisPtrClassName = getClassNameFromType(thisPtr->getType());
-    }
-
-    size_t found = thisPtrClassName.find_last_not_of("0123456789");
-    if (found != string::npos) {
-        if (found != thisPtrClassName.size() - 1 && thisPtrClassName[found] == '.') {
-            return thisPtrClassName.substr(0, found);
-        }
-    }
-
-    return thisPtrClassName;
-}
-
-string CHGraph::getFunNameOfVCallSite(CallSite cs) const {
-    string funName;
-    Instruction *inst = cs.getInstruction();
-    if (MDNode *N = inst->getMetadata("VCallFunName")) {
-        MDString *mdstr = cast<MDString>(N->getOperand(0));
-        funName = mdstr->getString().str();
-    }
-    return funName;
-}
-
-
 
 void CHGraph::buildVirtualFunctionToIDMap() {
     /*
@@ -874,13 +507,13 @@ void CHGraph::buildVirtualFunctionToIDMap() {
             group.insert(curnode);
             if (visitedNodes.find(curnode) != visitedNodes.end())
                 continue;
-            for (set<CHEdge*>::const_iterator it = curnode->getOutEdges().begin(),
+            for (CHEdge::CHEdgeSetTy::const_iterator it = curnode->getOutEdges().begin(),
                     eit = curnode->getOutEdges().end(); it != eit; ++it) {
                 CHNode *tmpnode = (*it)->getDstNode();
                 nodeStack.push(tmpnode);
                 group.insert(tmpnode);
             }
-            for (set<CHEdge*>::const_iterator it = curnode->getInEdges().begin(),
+            for (CHEdge::CHEdgeSetTy::const_iterator it = curnode->getInEdges().begin(),
                     eit = curnode->getInEdges().end(); it != eit; ++it) {
                 CHNode *tmpnode = (*it)->getSrcNode();
                 nodeStack.push(tmpnode);
@@ -895,11 +528,13 @@ void CHGraph::buildVirtualFunctionToIDMap() {
         set<const Function*> virtualFunctions;
         for (CHNodeSetTy::iterator it = group.begin(),
                 eit = group.end(); it != eit; ++it) {
-            const CHNode *tmpnode = *it;
-            const set<const Function*> &vfns = tmpnode->getAllVirtualFunctions();
-            for (set<const Function*>::iterator fit = vfns.begin(),
-                    feit = vfns.end(); fit != feit; ++fit) {
-                virtualFunctions.insert(*fit);
+            const vector<CHNode::FuncVector> &vecs = (*it)->getVirtualFunctionVectors();
+            for (vector<CHNode::FuncVector>::const_iterator vit = vecs.begin(),
+                    veit = vecs.end(); vit != veit; ++vit) {
+                for (vector<const Function*>::const_iterator fit = (*vit).begin(),
+                        feit = (*vit).end(); fit != feit; ++fit) {
+                        virtualFunctions.insert(*fit);
+                }
             }
         }
 
@@ -932,176 +567,62 @@ void CHGraph::buildVirtualFunctionToIDMap() {
     }
 }
 
-void CHGraph::getCSClasses(CallSite cs, CHNodeSetTy &chClasses) const {
+const CHGraph::CHNodeSetTy& CHGraph::getCSClasses(CallSite cs) {
+	assert(isVirtualCallSite(cs) && "not virtual callsite!");
 
-    assert(isVirtualCallSite(cs) && "not virtual callsite!");
-
-    string thisPtrClassName = getClassNameOfThisPtr(cs);
-
-    CHNode *thisNode = getNode(thisPtrClassName);
-    if (thisNode == NULL)
-        return;
-
-    ////// get descendants based cha
-    CHNodeSetTy descendants;
-    if (thisNode->isTemplate()) {
-        descendants = getTemplateInstancesAndDescendants(thisPtrClassName);
-    } else if (hasDescendants(thisPtrClassName)) {
-        descendants = getDescendants(thisPtrClassName);
-    } else {
-    }
-    descendants.insert(thisNode);
-
-    for (CHNodeSetTy::const_iterator it = descendants.begin(),
-            eit = descendants.end(); it != eit; ++it) {
-        const CHNode *child = *it;
-        chClasses.insert(child);
-    }
-}
-
-void CHGraph::getCSVtbls(CallSite cs, set<llvm::Value*> &vtbls) const {
-    assert(isVirtualCallSite(cs) && "not virtual callsite!");
-    CHNodeSetTy chClasses;
-    getCSClasses(cs, chClasses);
-    for (CHNodeSetTy::const_iterator it = chClasses.begin(),
-            eit = chClasses.end(); it != eit; ++it) {
-        const CHNode *child = *it;
-        Value *vtbl = const_cast<Value*>(child->getVTable());
-        if (vtbl != NULL) {
-            vtbls.insert(vtbl);
-        }
-    }
-}
-
-void CHGraph::getCSVFns(CallSite cs, set<Value*> &virtualFunctions) const {
-    assert(isVirtualCallSite(cs) && "not virtual callsite!");
-    CHNodeSetTy chClasses;
-    getCSClasses(cs, chClasses);
-    /// get target virtual functions
-    size_t idx = cppUtil::getVCallIdx(cs);
-    /// get the function name of the virtual callsite
-    string funName = getFunNameOfVCallSite(cs);
-    for (CHNodeSetTy::const_iterator it = chClasses.begin(),
-            eit = chClasses.end(); it != eit; ++it) {
-        const CHNode *child = *it;
-        set<const Function*> vfns;
-        child->getVirtualFunctions(idx, vfns);
-        for (set<const Function*>::const_iterator fit = vfns.begin(),
-                feit = vfns.end(); fit != feit; ++fit) {
-            const Function* callee = *fit;
-            if (cs.arg_size() == callee->arg_size() ||
-                    (cs.getFunctionType()->isVarArg() && callee->isVarArg())) {
-                cppUtil::DemangledName dname =
-                    cppUtil::demangle(callee->getName().str());
-                string calleeName = dname.funcName;
-                /*
-                 * if we can't get the function name of a virtual callsite, all virtual
-                 * functions calculated by idx will be valid
-                 */
-                if (funName.size() == 0) {
-                    virtualFunctions.insert(const_cast<Function*>(callee));
-                } else if (funName[0] == '~') {
-                    /*
-                     * if the virtual callsite is calling a destructor, then all
-                     * destructors in the ch will be valid
-                     * class A { virtual ~A(){} };
-                     * class B: public A { virtual ~B(){} };
-                     * int main() {
-                     *   A *a = new B;
-                     *   delete a;  /// the function name of this virtual callsite is ~A()
-                     * }
-                     */
-                    if (calleeName[0] == '~') {
-                        virtualFunctions.insert(const_cast<Function*>(callee));
-                    }
-                } else {
-                    /*
-                     * for other virtual function calls, the function name of the callsite
-                     * and the function name of the target callee should match exactly
-                     */
-                    if (funName.compare(calleeName) == 0) {
-                        virtualFunctions.insert(const_cast<Function*>(callee));
-                    }
-                }
-            }
-        }
-    }
-}
-
-/*
- * Is this virtual call inside its own constructor or destructor?
- */
-bool CHGraph::VCallInCtorOrDtor(CallSite cs) const {
-    std::string classNameOfThisPtr = getClassNameOfThisPtr(cs);
-    const Function *func = cs.getInstruction()->getParent()->getParent();
-    if (isConstructor(func) || isDestructor(func)) {
-        struct DemangledName dname = demangle(func->getName().str());
-        if (classNameOfThisPtr.compare(dname.className) == 0)
-            return true;
-    }
-    return false;
-}
-
-/*
- * Filter vtbls (calculated based on pointsto set) based on CHA
- * for callsite "cs"
- */
-void CHGraph::filterVtblsBasedonCHA(CallSite cs,
-                                    std::set<const llvm::Value*> &vtbls,
-                                    CHNodeSetTy &targetClasses) const {
-    std::string classNameOfThisPtr = getClassNameOfThisPtr(cs);
-    std::set<std::string> descendantNames =
-        getDescendantsNames(classNameOfThisPtr);
-    descendantNames.insert(classNameOfThisPtr);
-
-    for (std::set<const llvm::Value*>::iterator it = vtbls.begin(),
-            eit = vtbls.end(); it != eit; ++it) {
-        const Value *vtbl = *it;
-        std::string className = getClassNameFromVtblVal(vtbl);
-        if (className.size() > 0 &&
-                descendantNames.find(className) != descendantNames.end()) {
-            const CHNode *ptdNode = getNode(className);
-            if (ptdNode != NULL) {
-                targetClasses.insert(ptdNode);
-            }
-        }
-    }
+	CallSiteToCHNodesMap::const_iterator it = csToClassesMap.find(cs);
+	if (it != csToClassesMap.end()) {
+		return it->second;
+	} else {
+		string thisPtrClassName = getClassNameOfThisPtr(cs);
+		if (const CHNode* thisNode = getNode(thisPtrClassName)) {
+			const CHNodeSetTy& instAndDesces = getInstancesAndDescendants(thisPtrClassName);
+			csToClassesMap[cs].insert(thisNode);
+			for (CHNodeSetTy::const_iterator it = instAndDesces.begin(), eit = instAndDesces.end(); it != eit; ++it)
+				csToClassesMap[cs].insert(*it);
+		}
+		return csToClassesMap[cs];
+	}
 }
 
 /*
  * Get virtual functions for callsite "cs" based on vtbls (calculated
  * based on pointsto set)
  */
-void CHGraph::getVFnsFromVtbls(llvm::CallSite cs,
-                               std::set<const llvm::Value*> &vtbls,
-                               std::set<const llvm::Function*> &virtualFunctions) const {
-    CHNodeSetTy targetClasses;
-    std::string classNameOfThisPtr = getClassNameOfThisPtr(cs);
-    if (VCallInCtorOrDtor(cs)) {
-        targetClasses.insert(getNode(classNameOfThisPtr));
-    } else {
-        filterVtblsBasedonCHA(cs, vtbls, targetClasses);
-    }
+void CHGraph::getVFnsFromVtbls(llvm::CallSite cs, VTableSet &vtbls, VFunSet &virtualFunctions) const {
 
     /// get target virtual functions
-    size_t idx = cppUtil::getVCallIdx(cs);
+    size_t idx = getVCallIdx(cs);
     /// get the function name of the virtual callsite
     string funName = getFunNameOfVCallSite(cs);
-    for (CHNodeSetTy::const_iterator it = targetClasses.begin(),
-            eit = targetClasses.end(); it != eit; ++it) {
-        const CHNode *child = *it;
-        set<const Function*> vfns;
+    for (VTableSet::iterator it = vtbls.begin(), eit = vtbls.end(); it != eit; ++it) {
+        const CHNode *child = getNode(getClassNameFromVtblObj(*it));
+        if (child == NULL)
+            continue;
+        CHNode::FuncVector vfns;
         child->getVirtualFunctions(idx, vfns);
-        for (set<const Function*>::const_iterator fit = vfns.begin(),
+        for (CHNode::FuncVector::const_iterator fit = vfns.begin(),
                 feit = vfns.end(); fit != feit; ++fit) {
             const Function* callee = *fit;
-            //if(cs.arg_size() != callee->arg_size())
-            //  continue;
             if (cs.arg_size() == callee->arg_size() ||
                     (cs.getFunctionType()->isVarArg() && callee->isVarArg())) {
-                cppUtil::DemangledName dname =
-                    cppUtil::demangle(callee->getName().str());
+                DemangledName dname = demangle(callee->getName().str());
                 string calleeName = dname.funcName;
+
+                /*
+                 * The compiler will add some special suffix (e.g.,
+                 * "[abi:cxx11]") to the end of some virtual function:
+                 * In dealII
+                 * function: FE_Q<3>::get_name
+                 * will be mangled as: _ZNK4FE_QILi3EE8get_nameB5cxx11Ev
+                 * after demangling: FE_Q<3>::get_name[abi:cxx11]
+                 * The special suffix ("[abi:cxx11]") needs to be removed
+                 */
+                const std::string suffix("[abi:cxx11]");
+                size_t suffix_pos = calleeName.rfind(suffix);
+                if (suffix_pos != string::npos)
+                  calleeName.erase(suffix_pos, suffix.size());
+
                 /*
                  * if we can't get the function name of a virtual callsite, all virtual
                  * functions calculated by idx will be valid
@@ -1136,13 +657,57 @@ void CHGraph::getVFnsFromVtbls(llvm::CallSite cs,
     }
 }
 
+void CHGraph::buildCSToCHAVtblsAndVfnsMap() {
+
+	for (SymbolTableInfo::CallSiteSet::const_iterator it =
+			SymbolTableInfo::Symbolnfo()->getCallSiteSet().begin(), eit =
+			SymbolTableInfo::Symbolnfo()->getCallSiteSet().end(); it != eit; ++it) {
+		CallSite cs = *it;
+		if (!cppUtil::isVirtualCallSite(cs))
+			continue;
+		VTableSet vtbls;
+		const CHNodeSetTy& chClasses = getCSClasses(cs);
+		for (CHNodeSetTy::const_iterator it = chClasses.begin(), eit = chClasses.end(); it != eit; ++it) {
+			const CHNode *child = *it;
+			const GlobalValue *vtbl = child->getVTable();
+			if (vtbl != NULL) {
+				vtbls.insert(vtbl);
+			}
+		}
+		if (vtbls.size() > 0) {
+			csToCHAVtblsMap[cs] = vtbls;
+			VFunSet virtualFunctions;
+			getVFnsFromVtbls(cs, vtbls, virtualFunctions);
+			if (virtualFunctions.size() > 0)
+				csToCHAVFnsMap[cs] = virtualFunctions;
+		}
+	}
+}
+
+void CHGraph::printCH() {
+	for (CHGraph::const_iterator it = this->begin(), eit = this->end();
+			it != eit; ++it) {
+		const CHNode *node = it->second;
+		outs() << "class: " << node->getName() << "\n";
+		for (CHEdge::CHEdgeSetTy::const_iterator it = node->OutEdgeBegin();
+				it != node->OutEdgeEnd(); ++it) {
+			if ((*it)->getEdgeType() == CHEdge::INHERITANCE)
+				outs() << (*it)->getDstNode()->getName() << " --inheritance--> "
+						<< (*it)->getSrcNode()->getName() << "\n";
+			else
+				outs() << (*it)->getSrcNode()->getName() << " --instance--> "
+						<< (*it)->getDstNode()->getName() << "\n";
+		}
+	}
+	outs() << '\n';
+}
+
 /*!
  * Dump call graph into dot file
  */
 void CHGraph::dump(const std::string& filename) {
-    if(dumpGraph)
-        GraphPrinter::WriteGraphToFile(llvm::outs(), filename, this);
-
+    GraphPrinter::WriteGraphToFile(llvm::outs(), filename, this);
+    printCH();
 }
 
 
