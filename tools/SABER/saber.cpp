@@ -29,6 +29,7 @@
 #include "SABER/LeakChecker.h"
 #include "SABER/FileChecker.h"
 #include "SABER/DoubleFreeChecker.h"
+#include "SABER/SinkSourceSlice.h"
 
 #include <llvm-c/Core.h> // for LLVMGetGlobalContext()
 #include <llvm/Support/CommandLine.h>	// for cl
@@ -60,6 +61,9 @@ static cl::opt<bool> DFREECHECKER("dfree", cl::init(false),
 static cl::opt<bool> UAFCHECKER("uaf", cl::init(false),
                                 cl::desc("Use-After-Free Detection"));
 
+static cl::opt<bool> SLICECHECK("slice", cl::init(false),
+				cl::desc("Slice checker"));
+
 int main(int argc, char ** argv) {
 
     int arg_num = 0;
@@ -74,13 +78,19 @@ int main(int argc, char ** argv) {
     LeakChecker *saber;
 
     if(LEAKCHECKER)
-        saber = new LeakChecker();
+      saber = new LeakChecker();
     else if(FILECHECKER)
-        saber = new FileChecker();
+      saber = new FileChecker();
     else if(DFREECHECKER)
-        saber = new DoubleFreeChecker();
+      saber = new DoubleFreeChecker();
+    else if (SLICECHECK) {
+      SinkSourceSlice * slicer = new SinkSourceSlice();
+      slicer->runOnModule(svfModule);
 
-    saber->runOnModule(svfModule);
+    }
+
+    if ( !SLICECHECK ) 
+      saber->runOnModule(svfModule);
 
     svfModule.dumpModulesToFile(".dvf");
 

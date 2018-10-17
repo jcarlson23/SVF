@@ -1,0 +1,41 @@
+digraph "SVFG" {
+	label="SVFG";
+
+	Node0x7ff8b1e00fe0 [shape=record,color=grey,label="{NodeID: 0\nNullPtr}"];
+	Node0x7ff8b1e00fe0 -> Node0x7ff8b1e01210[style=solid];
+	Node0x7ff8b1e01210 [shape=record,color=black,label="{NodeID: 7\n2\<--3\n}"];
+	Node0x7ff8b1e01080 [shape=record,color=green,label="{NodeID: 2\n14\<--15\n}"];
+	Node0x7ff8b1e01f20 [shape=record,color=yellow,style=double,label="{NodeID: 28\n2V_3 = CSCHI(MR_2V_2)\npts\{22 \}\nCS[]}"];
+	Node0x7ff8b1e012b0 [shape=record,color=red,label="{NodeID: 9\n10\<--8\n}"];
+	Node0x7ff8b1e012b0 -> Node0x7ff8b1e01380[style=solid];
+	Node0x7ff8b1e01120 [shape=record,color=green,label="{NodeID: 4\n19\<--20\n}"];
+	Node0x7ff8b1e01120 -> Node0x7ff8b1e01480[style=solid];
+	Node0x7ff8b1e03b80 [shape=record,color=black,label="{NodeID: 30\n7 = PHI(21, )\n0th arg swap }"];
+	Node0x7ff8b1e03b80 -> Node0x7ff8b1e01260[style=solid];
+	Node0x7ff8b1e03b80 -> Node0x7ff8b1e01380[style=solid];
+	Node0x7ff8b1e01380 [shape=record,color=blue,label="{NodeID: 11\n7\<--10\n|{<s0>1}}"];
+	Node0x7ff8b1e01380:s0 -> Node0x7ff8b1e01f20[style=dashed,color=blue];
+	Node0x7ff8b1e011c0 [shape=record,color=green,label="{NodeID: 6\n23\<--24\n|{|<s1>1}}"];
+	Node0x7ff8b1e011c0 -> Node0x7ff8b1e01480[style=solid];
+	Node0x7ff8b1e011c0:s1 -> Node0x7ff8b1e024f0[style=solid,color=red];
+	Node0x7ff8b1e01480 [shape=record,color=blue,label="{NodeID: 13\n23\<--19\n|{<s0>1|<s1>1}}"];
+	Node0x7ff8b1e01480:s0 -> Node0x7ff8b1e012b0[style=dashed,color=red];
+	Node0x7ff8b1e01480:s1 -> Node0x7ff8b1e01300[style=dashed,color=red];
+	Node0x7ff8b1e01030 [shape=record,color=green,label="{NodeID: 1\n4\<--5\n}"];
+	Node0x7ff8b1e01260 [shape=record,color=red,label="{NodeID: 8\n9\<--7\n}"];
+	Node0x7ff8b1e01260 -> Node0x7ff8b1e01300[style=solid];
+	Node0x7ff8b1e010d0 [shape=record,color=green,label="{NodeID: 3\n17\<--18\n}"];
+	Node0x7ff8b1e010d0 -> Node0x7ff8b1e01400[style=solid];
+	Node0x7ff8b1e02050 [shape=record,color=yellow,style=double,label="{NodeID: 29\n4V_3 = CSCHI(MR_4V_2)\npts\{24 \}\nCS[]}"];
+	Node0x7ff8b1e01300 [shape=record,color=blue,label="{NodeID: 10\n8\<--9\n|{<s0>1}}"];
+	Node0x7ff8b1e01300:s0 -> Node0x7ff8b1e02050[style=dashed,color=blue];
+	Node0x7ff8b1e01170 [shape=record,color=green,label="{NodeID: 5\n21\<--22\n|{|<s1>1}}"];
+	Node0x7ff8b1e01170 -> Node0x7ff8b1e01400[style=solid];
+	Node0x7ff8b1e01170:s1 -> Node0x7ff8b1e03b80[style=solid,color=red];
+	Node0x7ff8b1e024f0 [shape=record,color=black,label="{NodeID: 31\n8 = PHI(23, )\n1st arg swap }"];
+	Node0x7ff8b1e024f0 -> Node0x7ff8b1e012b0[style=solid];
+	Node0x7ff8b1e024f0 -> Node0x7ff8b1e01300[style=solid];
+	Node0x7ff8b1e01400 [shape=record,color=blue,label="{NodeID: 12\n21\<--17\n|{<s0>1|<s1>1}}"];
+	Node0x7ff8b1e01400:s0 -> Node0x7ff8b1e01260[style=dashed,color=red];
+	Node0x7ff8b1e01400:s1 -> Node0x7ff8b1e01380[style=dashed,color=red];
+}

@@ -40,6 +40,7 @@ set(SOURCES
     SABER/SaberCheckerAPI.cpp
     SABER/SaberSVFGBuilder.cpp
     SABER/SrcSnkDDA.cpp
+    SABER/SinkSourceSlice.cpp
     WPA/Andersen.cpp
     WPA/AndersenLCD.cpp
     WPA/AndersenStat.cpp

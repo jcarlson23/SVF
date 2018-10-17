@@ -1,5 +1,6 @@
 Release/
 Debug/
+Debug+build/
 build/
 build*
 html/
