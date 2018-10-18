@@ -86,12 +86,12 @@ int main(int argc, char ** argv) {
     else if (SLICECHECK) {
       SinkSourceSlice * slicer = new SinkSourceSlice();
       slicer->runOnModule(svfModule);
-
     }
 
-    if ( !SLICECHECK ) 
+    if ( !SLICECHECK ) {
       saber->runOnModule(svfModule);
-
+    }
+    
     svfModule.dumpModulesToFile(".dvf");
 
     return 0;
