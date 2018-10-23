@@ -20,7 +20,7 @@ More interesting methods are:
 * _getStoreSVFGNode( StorePE * store)_ const - looks like it returns the corresponding the SVFGNode given the PAGEdge?
 
 
-Note that I need to understand the PAG structure.
+Note that I need to understand the PAG structure. PAG means Program Analysis Graph.
 
 * _addIntraIndirectVFEdge_ - looks like this helps to define the use-def chain within a given memory region.
 * _addCallIndirectVFEdge_ - similar
