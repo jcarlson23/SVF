@@ -91,7 +91,7 @@ int main(int argc, char ** argv) {
     if ( !SLICECHECK ) {
       saber->runOnModule(svfModule);
     }
-    
+
     svfModule.dumpModulesToFile(".dvf");
 
     return 0;
