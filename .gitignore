@@ -1,12 +1,10 @@
-Release/
-Debug/
-Debug-build/
+Release*/
+Debug*/
 build/
 build*
 html/
 Release+Asserts/
 Debug+Asserts/
-Release/
 autoconf/
 tests/result/
 doxygen/
