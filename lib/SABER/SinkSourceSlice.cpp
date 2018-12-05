@@ -31,3 +31,29 @@ void SinkSourceSlice::reportBug(ProgSlice* slice) {
 
 }
 
+bool SinkSourceSlice::process(SVFModule module) {
+    
+    llvm::outs() << "processing...\n";
+    
+    initialize( module );
+    // ContextCond::setMaxCxtLen(cxtLimit); - default would be "3" but I'm going to omit
+    // for now.
+
+    SVFGNodeSet Sources = getSources();
+    llvm::outs() << "we have " << Sources.size() << " sources.\n";
+    SVFGNodeSet Sinks   = getSinks();
+    llvm::outs() << " we have " << Sinks.size() << " sinks.\n";
+    
+    // Here we grab the sources as a SET and begin to iterate over them.
+    for ( SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd(); iter != eiter; ++iter) {
+
+      setCurSlice(*iter);
+      llvm::outs() << "Analyzing slice: " << (*iter)->getId() << "\n";
+  
+      ContextCond cxt;
+      DPIm item ( (*iter)->getId(), cxt);
+        
+    }
+    
+    return false;
+}

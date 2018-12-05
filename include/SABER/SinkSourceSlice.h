@@ -19,11 +19,11 @@
 class SinkSourceSlice : public SrcSnkDDA, public llvm::ModulePass {
 
  public:
-  typedef std::map<const SVFGNode*, llvm::CallSite> SVFGNodeToCSIDMap;
-  typedef FIFOWorkList<llvm::CallSite> CSWorkList;
-  typedef ProgSlice::VFWorkList WorkList;
-  typedef NodeBS SVFGNodeBS;
-  typedef PAG::CallSiteSet CallSiteSet;
+    typedef std::map<const SVFGNode*, llvm::CallSite> SVFGNodeToCSIDMap;
+    typedef FIFOWorkList<llvm::CallSite> CSWorkList;
+    typedef ProgSlice::VFWorkList WorkList;
+    typedef NodeBS SVFGNodeBS;
+    typedef PAG::CallSiteSet CallSiteSet;
 
   // pass ID
   static char ID;
@@ -42,10 +42,13 @@ class SinkSourceSlice : public SrcSnkDDA, public llvm::ModulePass {
   virtual bool runOnModule(llvm::Module& module) {
     return runOnModule(module);
   }
+    
+    bool process(SVFModule module);
 
   virtual bool runOnModule(SVFModule module) {
-    analyze(module);
-    return false;
+      process(module);
+      analyze(module);
+      return false;
   }
 	
 	virtual void initSrcs();
